@@ -10,7 +10,48 @@ import { randomBytes } from "crypto";
 
 const REF_MARKER_RE =
   /(?<![a-zA-Z_])ref:([a-f0-9]{8})(?::(start|end|[a-z][a-z0-9-]*))?(?![a-f0-9:])/g;
-const TO_REF_RE = /\bto_ref:([a-f0-9]{8})(?![a-f0-9])/g;
+
+// Matches to_ref: with optional commit/name prefix segments before the UUID.
+// group(1) = full body, e.g. "a3f9c821", "HEAD:a3f9c821", "abc123:rate-limiter:a3f9c821"
+const TO_REF_RE = /\bto_ref:((?:[-A-Za-z0-9._/@]+:)*[a-f0-9]{8})(?![a-f0-9:])/g;
+
+// ── to_ref: body parser ───────────────────────────────────────────────────────
+
+interface ParsedToRef {
+  uuid: string;
+  /** Commit SHA, branch, tag, or "HEAD" — present when the user pinned to a commit. */
+  commit: string | undefined;
+  /** Human-readable label embedded in the to_ref: body, e.g. "rate-limiter". */
+  name: string | undefined;
+}
+
+function isCommitRef(s: string): boolean {
+  if (s === "HEAD") return true;
+  // All-hex, length 7–40, but NOT exactly 8 (which looks like a UUID)
+  if (/^[0-9a-f]+$/.test(s) && s.length !== 8 && s.length >= 7 && s.length <= 40) return true;
+  // Slash, dots, uppercase, or digit-first → branch/tag/version
+  if (s.includes("/") || s.includes(".")) return true;
+  if (/[A-Z]/.test(s) || /^\d/.test(s)) return true;
+  return false;
+}
+
+function parseToRef(body: string): ParsedToRef {
+  const parts = body.split(":");
+  const uuid  = parts[parts.length - 1];
+  let commit: string | undefined;
+  let name:   string | undefined;
+
+  if (parts.length === 2) {
+    const seg = parts[0];
+    if (isCommitRef(seg)) { commit = seg; }
+    else                   { name   = seg; }
+  } else if (parts.length >= 3) {
+    commit = parts[0];
+    name   = parts.slice(1, -1).join(":");
+  }
+
+  return { uuid, commit, name };
+}
 
 interface RefEntry {
   /** Relative path from workspace root */
@@ -145,8 +186,19 @@ class InlineHintProvider implements vscode.Disposable {
     TO_REF_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = TO_REF_RE.exec(text)) !== null) {
-      const entry = this.refs.resolve(m[1]);
-      const label = entry ? `→ ${entryLocation(entry)}` : `→ (unresolved)`;
+      const { uuid, commit } = parseToRef(m[1]);
+      const entry     = this.refs.resolve(uuid);
+      const isPinned  = commit !== undefined && commit !== "HEAD";
+
+      let label: string;
+      if (entry) {
+        const loc = entryLocation(entry);
+        label = isPinned ? `→ [${commit}] ${loc}` : `→ ${loc}`;
+      } else if (isPinned) {
+        label = `→ [${commit}] (historical)`;
+      } else {
+        label = `→ (unresolved)`;
+      }
 
       const start = editor.document.positionAt(m.index);
       const end   = editor.document.positionAt(m.index + m[0].length);
@@ -178,7 +230,7 @@ class ToRefLinkProvider implements vscode.DocumentLinkProvider {
     TO_REF_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = TO_REF_RE.exec(text)) !== null) {
-      const uuid  = m[1];
+      const { uuid } = parseToRef(m[1]);
       const entry = this.refs.resolve(uuid);
       const uri   = this.refs.resolveUri(uuid);
       if (!entry || !uri) continue;
@@ -206,13 +258,30 @@ class ToRefHoverProvider implements vscode.HoverProvider {
   ): vscode.Hover | undefined {
     const wordRange = document.getWordRangeAtPosition(
       position,
-      /\bto_ref:[a-f0-9]{8}(?![a-f0-9])/
+      /\bto_ref:(?:[-A-Za-z0-9._/@]+:)*[a-f0-9]{8}(?![a-f0-9:])/
     );
     if (!wordRange) return undefined;
 
-    const uuid  = document.getText(wordRange).slice("to_ref:".length);
-    const entry = this.refs.resolve(uuid);
+    const body = document.getText(wordRange).slice("to_ref:".length);
+    const { uuid, commit, name: toRefLabel } = parseToRef(body);
+    const entry    = this.refs.resolve(uuid);
+    const isPinned = commit !== undefined && commit !== "HEAD";
 
+    // Historical reference — pinned to a specific commit, not in current .coderef
+    if (!entry && isPinned) {
+      const md = new vscode.MarkdownString();
+      md.isTrusted = true;
+      md.appendMarkdown(`**coderef** \`${uuid}\``);
+      if (toRefLabel) md.appendMarkdown(` — *${toRefLabel}*`);
+      md.appendMarkdown(`\n\n🔒 Pinned to commit \`${commit}\`\n\n`);
+      md.appendMarkdown(
+        `Historical reference — UUID not in current \`.coderef\`. ` +
+        `This \`to_ref:\` points to code as it existed at \`${commit}\`.`
+      );
+      return new vscode.Hover(md, wordRange);
+    }
+
+    // Dangling reference — no commit pin and not in .coderef
     if (!entry) {
       return new vscode.Hover(
         new vscode.MarkdownString(
@@ -228,7 +297,11 @@ class ToRefHoverProvider implements vscode.HoverProvider {
     md.isTrusted = true;
     md.appendMarkdown(`**coderef** \`${uuid}\``);
     if (entry.name) md.appendMarkdown(` — *${entry.name}*`);
+    if (toRefLabel && toRefLabel !== entry.name) {
+      md.appendMarkdown(` *(label: ${toRefLabel})*`);
+    }
     md.appendMarkdown(`\n\n`);
+    if (isPinned) md.appendMarkdown(`🔒 Pinned to \`${commit}\`\n\n`);
 
     if (uri) {
       const target  = uri.with({ fragment: `L${entry.line}` });
@@ -254,11 +327,12 @@ class ToRefDefinitionProvider implements vscode.DefinitionProvider {
   ): vscode.Location | undefined {
     const wordRange = document.getWordRangeAtPosition(
       position,
-      /\bto_ref:[a-f0-9]{8}(?![a-f0-9])/
+      /\bto_ref:(?:[-A-Za-z0-9._/@]+:)*[a-f0-9]{8}(?![a-f0-9:])/
     );
     if (!wordRange) return undefined;
 
-    const uuid  = document.getText(wordRange).slice("to_ref:".length);
+    const body  = document.getText(wordRange).slice("to_ref:".length);
+    const { uuid } = parseToRef(body);
     const entry = this.refs.resolve(uuid);
     if (!entry) return undefined;
     const uri = this.refs.resolveUri(uuid);
@@ -300,12 +374,15 @@ class DiagnosticsProvider implements vscode.Disposable {
     TO_REF_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = TO_REF_RE.exec(text)) !== null) {
-      if (!this.refs.has(m[1])) {
+      const { uuid, commit } = parseToRef(m[1]);
+      const isPinned = commit !== undefined && commit !== "HEAD";
+      // Commit-pinned historical refs are intentional — don't flag them
+      if (!isPinned && !this.refs.has(uuid)) {
         const start = document.positionAt(m.index);
         const end   = document.positionAt(m.index + m[0].length);
         const d = new vscode.Diagnostic(
           new vscode.Range(start, end),
-          `coderef: dangling reference — '${m[1]}' not found in .coderef`,
+          `coderef: dangling reference — '${uuid}' not found in .coderef`,
           sev
         );
         d.source = "coderef";
@@ -336,9 +413,9 @@ class ToRefCompletionProvider implements vscode.CompletionItemProvider {
     document: vscode.TextDocument,
     position: vscode.Position
   ): vscode.CompletionItem[] {
-    // Only trigger when the text before the cursor ends with `to_ref:`
+    // Trigger when cursor follows `to_ref:` or `to_ref:<commit>:` or `to_ref:<commit>:<name>:`
     const linePrefix = document.lineAt(position).text.slice(0, position.character);
-    if (!linePrefix.endsWith("to_ref:")) return [];
+    if (!linePrefix.match(/\bto_ref:(?:[-A-Za-z0-9._/@]+:)*$/)) return [];
 
     const items: vscode.CompletionItem[] = [];
 

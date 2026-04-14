@@ -6,7 +6,7 @@ Commands:
   resolve <uuid>   Resolve a UUID to its location; --context shows source lines
   list             List all UUID anchors and their locations
   check            Audit refs: dangling to_ref: and orphan ref: anchors
-  scan             Scan source files and rewrite .refs (no git commit needed)
+  scan             Scan source files and rewrite .coderef (no git commit needed)
   graph            Emit the full anchor→reference graph as JSON
   install          Install the pre-commit hook into the current git repo
 """
@@ -27,9 +27,59 @@ from pathlib import Path
 REF_MARKER_RE = re.compile(
     r'(?<![a-zA-Z_])ref:([a-f0-9]{8})(?::(start|end|[a-z][a-z0-9-]*))?(?![a-f0-9:])'
 )
-TO_REF_RE = re.compile(r'\bto_ref:([a-f0-9]{8})(?![a-f0-9])')
+TO_REF_RE = re.compile(r'\bto_ref:((?:[-A-Za-z0-9._/@]+:)*[a-f0-9]{8})(?![a-f0-9:])')
 
 REFS_FILENAME = ".coderef"
+
+
+# ── to_ref: body parser ───────────────────────────────────────────────────────
+
+def _is_commit_ref(s: str) -> bool:
+    """Heuristic: decide whether a to_ref: prefix segment is a commit/branch/tag."""
+    if s == "HEAD":
+        return True
+    # Short or full SHA: all-hex, length 7–40, but NOT exactly 8 (which looks like a UUID)
+    if re.match(r'^[0-9a-f]+$', s) and len(s) != 8 and 7 <= len(s) <= 40:
+        return True
+    # Typical branch/tag indicators: slash, dot, uppercase letters, or digit-first
+    if "/" in s or "." in s:
+        return True
+    if any(c.isupper() for c in s):
+        return True
+    if s and s[0].isdigit():
+        return True
+    return False
+
+
+def _parse_to_ref(body: str) -> dict:
+    """
+    Parse the body captured after ``to_ref:`` by TO_REF_RE.
+
+    Formats
+    -------
+    uuid                  → HEAD ref, no label
+    commit:uuid           → pinned ref, no label   (commit detected by _is_commit_ref)
+    label:uuid            → HEAD ref, with label   (label doesn't look like a commit)
+    commit:label:uuid     → pinned ref, with label
+
+    Returns {'uuid': str, 'commit': str|None, 'name': str|None}.
+    """
+    parts = body.split(":")
+    uuid = parts[-1]
+    commit: str | None = None
+    name:   str | None = None
+
+    if len(parts) == 2:
+        seg = parts[0]
+        if _is_commit_ref(seg):
+            commit = seg
+        else:
+            name = seg
+    elif len(parts) >= 3:
+        commit = parts[0]
+        name   = ":".join(parts[1:-1])
+
+    return {"uuid": uuid, "commit": commit, "name": name}
 
 
 # ── Data types ────────────────────────────────────────────────────────────────
@@ -85,7 +135,7 @@ def find_repo_root() -> Path | None:
 def require_root() -> Path:
     root = find_repo_root()
     if root is None:
-        print("error: no git repository or .refs file found", file=sys.stderr)
+        print("error: no git repository or .coderef file found", file=sys.stderr)
         sys.exit(1)
     return root
 
@@ -216,7 +266,12 @@ def scan_anchors(root: Path, files: list[str] | None = None) -> dict[str, RefInf
 
 
 def scan_to_refs(root: Path, files: list[str] | None = None) -> dict[str, list[dict]]:
-    """Scan for to_ref: occurrences. Returns {uuid: [{file, line}, ...]}."""
+    """
+    Scan for to_ref: occurrences.
+
+    Returns {uuid: [{file, line[, commit][, name]}, ...]} where ``commit``
+    and ``name`` are present only when the to_ref: body includes them.
+    """
     if files is None:
         files = tracked_files(root)
 
@@ -232,8 +287,14 @@ def scan_to_refs(root: Path, files: list[str] | None = None) -> dict[str, list[d
             continue
         for lineno, line in enumerate(text.splitlines(), start=1):
             for m in TO_REF_RE.finditer(line):
-                uuid = m.group(1)
-                result.setdefault(uuid, []).append({"file": rel, "line": lineno})
+                parsed = _parse_to_ref(m.group(1))
+                uuid = parsed["uuid"]
+                occ: dict = {"file": rel, "line": lineno}
+                if parsed["commit"]:
+                    occ["commit"] = parsed["commit"]
+                if parsed["name"]:
+                    occ["name"] = parsed["name"]
+                result.setdefault(uuid, []).append(occ)
 
     return result
 
@@ -256,7 +317,7 @@ def cmd_resolve(args) -> None:
     uuid = args.uuid.lower().strip()
 
     if uuid not in refs:
-        print(f"error: uuid '{uuid}' not found in .refs", file=sys.stderr)
+        print(f"error: uuid '{uuid}' not found in .coderef", file=sys.stderr)
         sys.exit(1)
 
     info = refs[uuid]
@@ -303,14 +364,22 @@ def cmd_check(args) -> None:
     files = tracked_files(root)
     to_refs = scan_to_refs(root, files)
 
-    # Dangling: to_ref: UUID not in .refs
+    # Dangling: UUID not in .coderef and no commit pin (expected to be current)
     dangling: list[tuple[str, int, str]] = []
-    for uuid, occurrences in sorted(to_refs.items()):
-        if uuid not in refs:
-            for occ in occurrences:
-                dangling.append((occ["file"], occ["line"], uuid))
+    # Historical: UUID not in .coderef but pinned to a specific commit (intentional)
+    historical: list[tuple[str, int, str, str]] = []  # (file, line, uuid, commit)
 
-    # Orphans: UUID in .refs with no to_ref: anywhere
+    for uuid, occurrences in sorted(to_refs.items()):
+        for occ in occurrences:
+            commit = occ.get("commit")
+            is_pinned = commit is not None and commit != "HEAD"
+            if uuid not in refs:
+                if is_pinned:
+                    historical.append((occ["file"], occ["line"], uuid, commit))
+                else:
+                    dangling.append((occ["file"], occ["line"], uuid))
+
+    # Orphans: UUID in .coderef with no to_ref: anywhere
     referenced = set(to_refs.keys())
     orphans = [(uuid, info) for uuid, info in sorted(refs.items()) if uuid not in referenced]
 
@@ -318,14 +387,21 @@ def cmd_check(args) -> None:
 
     if dangling:
         ok = False
-        print("DANGLING to_ref: (UUID has no anchor in .refs)")
+        print("DANGLING to_ref: (UUID has no anchor in .coderef)")
         for rel, lineno, uuid in sorted(dangling):
             print(f"  {rel}:{lineno}: to_ref:{uuid}")
 
-    if orphans:
+    if historical:
         if dangling:
             print()
-        label = "ORPHAN ref: (anchor exists in .refs but is never referenced)"
+        print("HISTORICAL to_ref: (pinned to a specific commit — not checked against current .coderef)")
+        for rel, lineno, uuid, commit in sorted(historical):
+            print(f"  {rel}:{lineno}: to_ref:{commit}:...:{uuid}")
+
+    if orphans:
+        if dangling or historical:
+            print()
+        label = "ORPHAN ref: (anchor exists in .coderef but is never referenced)"
         if args.strict:
             label += "  [--strict: failing]"
         print(label)
@@ -334,7 +410,7 @@ def cmd_check(args) -> None:
         if args.strict:
             ok = False
 
-    if ok and not orphans:
+    if ok and not orphans and not historical:
         ranges = sum(1 for i in refs.values() if i.kind == "range")
         named  = sum(1 for i in refs.values() if i.name)
         pts    = len(refs) - ranges
@@ -343,8 +419,11 @@ def cmd_check(args) -> None:
         if ranges: parts.append(f"{ranges} range{'s' if ranges != 1 else ''}")
         if named:  parts.append(f"{named} named")
         print(f"ok: no issues ({', '.join(parts) or '0 anchors'})")
+    elif ok and not orphans:
+        print(f"\nok: {len(historical)} historical ref(s) noted — not errors")
     elif ok:
-        print(f"\nok: {len(orphans)} orphan(s) — use --strict to fail on orphans")
+        hist_suffix = f", {len(historical)} historical" if historical else ""
+        print(f"\nok: {len(orphans)} orphan(s){hist_suffix} — use --strict to fail on orphans")
 
     if not ok:
         sys.exit(1)
@@ -369,7 +448,7 @@ def cmd_scan(args) -> None:
         for u, v in sorted(removed.items()):
             print(f"  - {u}  {v.display}  [{v.kind}]")
         if not (added or changed or removed):
-            print(".refs is already up to date")
+            print(".coderef is already up to date")
         else:
             print(f"\n(dry run — {len(added)} added, {len(changed)} changed, "
                   f"{len(removed)} removed, {unchanged} unchanged)")
@@ -385,7 +464,7 @@ def cmd_scan(args) -> None:
     if pts:    parts.append(f"{pts} point{'s' if pts != 1 else ''}")
     if ranges: parts.append(f"{ranges} range{'s' if ranges != 1 else ''}")
     if named:  parts.append(f"{named} named")
-    print(f"coderef: .refs updated ({', '.join(parts) or '0 anchors'})")
+    print(f"coderef: .coderef updated ({', '.join(parts) or '0 anchors'})")
 
 
 def cmd_graph(args) -> None:

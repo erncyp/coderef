@@ -53,9 +53,51 @@ from mcp.server.fastmcp import FastMCP
 REF_MARKER_RE = re.compile(
     r'(?<![a-zA-Z_])ref:([a-f0-9]{8})(?::(start|end|[a-z][a-z0-9-]*))?(?![a-f0-9:])'
 )
-TO_REF_RE = re.compile(r'\bto_ref:([a-f0-9]{8})(?![a-f0-9])')
+TO_REF_RE = re.compile(r'\bto_ref:((?:[-A-Za-z0-9._/@]+:)*[a-f0-9]{8})(?![a-f0-9:])')
 
 REFS_FILENAME = ".coderef"
+
+
+# ── to_ref: body parser ───────────────────────────────────────────────────────
+
+def _is_commit_ref(s: str) -> bool:
+    """Heuristic: decide whether a to_ref: prefix segment is a commit/branch/tag."""
+    if s == "HEAD":
+        return True
+    if re.match(r'^[0-9a-f]+$', s) and len(s) != 8 and 7 <= len(s) <= 40:
+        return True
+    if "/" in s or "." in s:
+        return True
+    if any(c.isupper() for c in s):
+        return True
+    if s and s[0].isdigit():
+        return True
+    return False
+
+
+def _parse_to_ref(body: str) -> dict:
+    """
+    Parse the body captured after ``to_ref:`` by TO_REF_RE.
+
+    Returns {'uuid': str, 'commit': str|None, 'name': str|None}.
+    """
+    parts = body.split(":")
+    uuid = parts[-1]
+    commit: str | None = None
+    name:   str | None = None
+
+    if len(parts) == 2:
+        seg = parts[0]
+        if _is_commit_ref(seg):
+            commit = seg
+        else:
+            name = seg
+    elif len(parts) >= 3:
+        commit = parts[0]
+        name   = ":".join(parts[1:-1])
+
+    return {"uuid": uuid, "commit": commit, "name": name}
+
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 
@@ -165,6 +207,7 @@ def tracked_files() -> list[str]:
 
 
 def scan_to_refs(files: list[str]) -> dict[str, list[dict]]:
+    """Returns {uuid: [{file, line[, commit][, name]}, ...]}."""
     result: dict[str, list[dict]] = {}
     for rel in files:
         full = ROOT / rel
@@ -176,8 +219,14 @@ def scan_to_refs(files: list[str]) -> dict[str, list[dict]]:
             continue
         for lineno, line in enumerate(text.splitlines(), start=1):
             for m in TO_REF_RE.finditer(line):
-                uuid = m.group(1)
-                result.setdefault(uuid, []).append({"file": rel, "line": lineno})
+                parsed = _parse_to_ref(m.group(1))
+                uuid = parsed["uuid"]
+                occ: dict = {"file": rel, "line": lineno}
+                if parsed["commit"]:
+                    occ["commit"] = parsed["commit"]
+                if parsed["name"]:
+                    occ["name"] = parsed["name"]
+                result.setdefault(uuid, []).append(occ)
     return result
 
 
@@ -317,9 +366,10 @@ def check() -> dict:
     Audit ref integrity across the codebase.
 
     Returns:
-      dangling  — to_ref: UUIDs with no matching ref: anchor in .coderef
-      orphans   — ref: anchors in .coderef that no to_ref: points to
-      ok        — True only when both lists are empty
+      dangling   — to_ref: UUIDs with no commit pin and no anchor in .coderef (errors)
+      historical — to_ref: UUIDs pinned to a specific commit, not in current .coderef (informational)
+      orphans    — ref: anchors in .coderef that no to_ref: points to
+      ok         — True only when dangling and orphans are both empty
 
     Run this to verify the codebase is in a consistent state, e.g. after
     a merge or before a release.
@@ -328,11 +378,17 @@ def check() -> dict:
     files   = tracked_files()
     to_refs = scan_to_refs(files)
 
-    dangling = []
+    dangling   = []
+    historical = []
     for uuid, occurrences in sorted(to_refs.items()):
-        if uuid not in refs:
-            for occ in occurrences:
-                dangling.append({"uuid": uuid, **occ})
+        for occ in occurrences:
+            commit = occ.get("commit")
+            is_pinned = commit is not None and commit != "HEAD"
+            if uuid not in refs:
+                if is_pinned:
+                    historical.append({"uuid": uuid, **occ})
+                else:
+                    dangling.append({"uuid": uuid, **occ})
 
     referenced = set(to_refs.keys())
     orphans = [
@@ -344,10 +400,12 @@ def check() -> dict:
     return {
         "ok": not dangling and not orphans,
         "dangling": dangling,
+        "historical": historical,
         "orphans": orphans,
         "summary": {
             "total_anchors": len(refs),
             "dangling_count": len(dangling),
+            "historical_count": len(historical),
             "orphan_count": len(orphans),
         },
     }
