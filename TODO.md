@@ -2,7 +2,7 @@
 
 ## AI / MCP integration
 
-- [ ] **MCP server** — expose `resolve`, `list`, and `graph` as MCP tool calls so AI assistants can navigate refs natively during a session
+- [x] **MCP server** — expose `resolve`, `list`, `graph`, `check`, and `read_anchor` as MCP tool calls so AI assistants can navigate refs natively during a session
 - [x] **`coderef graph` command** — emit the full `to_ref → ref` relationship as JSON for AI tooling and static analysis
 - [x] **Named refs** — support `ref:a3f9c821:rate-limiter` syntax so AI (and humans) get semantic meaning without reading the target file
 - [x] **Range refs** — mark a block with a start/end UUID pair (e.g. `ref:a3f9c821:start` / `ref:a3f9c821:end`) so an AI receives a whole logical unit, not just a line
