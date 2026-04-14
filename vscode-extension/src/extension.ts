@@ -5,12 +5,11 @@ import { randomBytes } from "crypto";
 
 // ── Regex patterns ────────────────────────────────────────────────────────────
 //
-// REF_ANCHOR_RE  matches:  ref:a3f9c821   (NOT  to_ref:a3f9c821)
-// TO_REF_RE      matches:  to_ref:a3f9c821
-//
-// UUID is exactly 8 lowercase hex characters.
+// REF_MARKER_RE  matches all ref: forms (mirrors the hook's pattern)
+// TO_REF_RE      matches to_ref:UUID
 
-const REF_ANCHOR_RE = /(?<![a-zA-Z_])ref:([a-f0-9]{8})(?![a-f0-9])/g;
+const REF_MARKER_RE =
+  /(?<![a-zA-Z_])ref:([a-f0-9]{8})(?::(start|end|[a-z][a-z0-9-]*))?(?![a-f0-9:])/g;
 const TO_REF_RE = /\bto_ref:([a-f0-9]{8})(?![a-f0-9])/g;
 
 interface RefEntry {
@@ -18,23 +17,22 @@ interface RefEntry {
   relPath: string;
   /** 1-indexed start line */
   line: number;
-  /** 1-indexed end line — present only for range refs */
+  /** 1-indexed end line — present for range refs */
   endLine?: number;
+  /** Human-readable name, e.g. "auth-guard" */
+  name?: string;
 }
 
-/** Human-readable location string, e.g. `src/foo.py:14` or `src/foo.py:14-28` */
 function entryLocation(entry: RefEntry): string {
-  return entry.endLine
-    ? `${entry.relPath}:${entry.line}-${entry.endLine}`
-    : `${entry.relPath}:${entry.line}`;
+  const lines = entry.endLine
+    ? `${entry.line}-${entry.endLine}`
+    : `${entry.line}`;
+  const loc = `${entry.relPath}:${lines}`;
+  return entry.name ? `${loc} (${entry.name})` : loc;
 }
 
 // ── RefsManager ───────────────────────────────────────────────────────────────
 
-/**
- * Reads and watches the .refs file at the workspace root.
- * Fires onDidChange whenever the map is reloaded.
- */
 class RefsManager implements vscode.Disposable {
   private map = new Map<string, RefEntry>();
   private watcher: vscode.FileSystemWatcher | undefined;
@@ -44,15 +42,11 @@ class RefsManager implements vscode.Disposable {
   activate(context: vscode.ExtensionContext): void {
     this.reload();
 
-    // Watch any .refs file inside the workspace
     const watcher = vscode.workspace.createFileSystemWatcher("**/.refs");
     watcher.onDidChange(() => this.reload(), null, context.subscriptions);
     watcher.onDidCreate(() => this.reload(), null, context.subscriptions);
     watcher.onDidDelete(
-      () => {
-        this.map.clear();
-        this.onDidChange.fire();
-      },
+      () => { this.map.clear(); this.onDidChange.fire(); },
       null,
       context.subscriptions
     );
@@ -63,43 +57,38 @@ class RefsManager implements vscode.Disposable {
   reload(): void {
     this.map.clear();
     const refsFile = this.findRefsFile();
-    if (!refsFile) {
-      this.onDidChange.fire();
-      return;
-    }
+    if (!refsFile) { this.onDidChange.fire(); return; }
 
     try {
       const text = fs.readFileSync(refsFile, "utf-8");
       for (const raw of text.split("\n")) {
-        const line = raw.trim();
-        if (!line || line.startsWith("#")) continue;
-        // Point ref:  <8-hex>  <relpath>:<line>
-        // Range ref:  <8-hex>  <relpath>:<startline>-<endline>
-        const m = line.match(/^([a-f0-9]{8})\s+(.+):(\d+)(?:-(\d+))?$/);
+        const trimmed = raw.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+
+        // Format: <8-hex>  <relpath>:<line>[-<endline>] [<name>]
+        const m = trimmed.match(
+          /^([a-f0-9]{8})\s+(.+):(\d+)(?:-(\d+))?(?:\s+([a-z][a-z0-9-]*))?$/
+        );
         if (m) {
           this.map.set(m[1], {
             relPath: m[2],
             line: parseInt(m[3], 10),
             endLine: m[4] ? parseInt(m[4], 10) : undefined,
+            name: m[5] ?? undefined,
           });
         }
       }
     } catch {
-      // .refs unreadable — silently keep empty map
+      // .refs unreadable — keep empty map
     }
 
     this.onDidChange.fire();
   }
 
-  resolve(uuid: string): RefEntry | undefined {
-    return this.map.get(uuid);
-  }
+  resolve(uuid: string): RefEntry | undefined { return this.map.get(uuid); }
+  has(uuid: string): boolean { return this.map.has(uuid); }
+  all(): ReadonlyMap<string, RefEntry> { return this.map; }
 
-  has(uuid: string): boolean {
-    return this.map.has(uuid);
-  }
-
-  /** Resolve a UUID to an absolute vscode.Uri, or undefined if not found. */
   resolveUri(uuid: string): vscode.Uri | undefined {
     const entry = this.resolve(uuid);
     if (!entry) return undefined;
@@ -128,9 +117,6 @@ class RefsManager implements vscode.Disposable {
 
 // ── Inline decoration provider ────────────────────────────────────────────────
 
-/**
- * Renders a subtle `→ path/to/file.py:42` annotation after each `to_ref:UUID`.
- */
 class InlineHintProvider implements vscode.Disposable {
   private readonly type: vscode.TextEditorDecorationType;
 
@@ -151,10 +137,7 @@ class InlineHintProvider implements vscode.Disposable {
   }
 
   update(editor: vscode.TextEditor): void {
-    if (!this.enabled()) {
-      editor.setDecorations(this.type, []);
-      return;
-    }
+    if (!this.enabled()) { editor.setDecorations(this.type, []); return; }
 
     const text = editor.document.getText();
     const decorations: vscode.DecorationOptions[] = [];
@@ -162,12 +145,11 @@ class InlineHintProvider implements vscode.Disposable {
     TO_REF_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = TO_REF_RE.exec(text)) !== null) {
-      const uuid = m[1];
-      const entry = this.refs.resolve(uuid);
+      const entry = this.refs.resolve(m[1]);
       const label = entry ? `→ ${entryLocation(entry)}` : `→ (unresolved)`;
 
       const start = editor.document.positionAt(m.index);
-      const end = editor.document.positionAt(m.index + m[0].length);
+      const end   = editor.document.positionAt(m.index + m[0].length);
       decorations.push({
         range: new vscode.Range(start, end),
         renderOptions: { after: { contentText: label } },
@@ -178,14 +160,10 @@ class InlineHintProvider implements vscode.Disposable {
   }
 
   updateAll(): void {
-    for (const editor of vscode.window.visibleTextEditors) {
-      this.update(editor);
-    }
+    for (const editor of vscode.window.visibleTextEditors) this.update(editor);
   }
 
-  dispose(): void {
-    this.type.dispose();
-  }
+  dispose(): void { this.type.dispose(); }
 }
 
 // ── DocumentLink provider (ctrl+click navigation) ────────────────────────────
@@ -200,20 +178,15 @@ class ToRefLinkProvider implements vscode.DocumentLinkProvider {
     TO_REF_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = TO_REF_RE.exec(text)) !== null) {
-      const uuid = m[1];
+      const uuid  = m[1];
       const entry = this.refs.resolve(uuid);
-      if (!entry) continue;
+      const uri   = this.refs.resolveUri(uuid);
+      if (!entry || !uri) continue;
 
       const start = document.positionAt(m.index);
-      const end = document.positionAt(m.index + m[0].length);
-      const range = new vscode.Range(start, end);
-
-      const uri = this.refs.resolveUri(uuid);
-      if (!uri) continue;
-
-      // VSCode interprets `L<n>` fragment as a line number (1-indexed)
+      const end   = document.positionAt(m.index + m[0].length);
       const target = uri.with({ fragment: `L${entry.line}` });
-      const link = new vscode.DocumentLink(range, target);
+      const link   = new vscode.DocumentLink(new vscode.Range(start, end), target);
       link.tooltip = `coderef: go to ${entryLocation(entry)}`;
       links.push(link);
     }
@@ -237,33 +210,33 @@ class ToRefHoverProvider implements vscode.HoverProvider {
     );
     if (!wordRange) return undefined;
 
-    const word = document.getText(wordRange);
-    const uuid = word.slice("to_ref:".length);
-
+    const uuid  = document.getText(wordRange).slice("to_ref:".length);
     const entry = this.refs.resolve(uuid);
+
     if (!entry) {
-      const md = new vscode.MarkdownString(
-        `**coderef** ⚠️ Dangling reference\n\nUUID \`${uuid}\` has no entry in \`.refs\`.\n\n` +
-          `Run the pre-commit hook (or \`coderef check\`) to audit all references.`
+      return new vscode.Hover(
+        new vscode.MarkdownString(
+          `**coderef** ⚠️ Dangling reference\n\nUUID \`${uuid}\` has no entry in \`.refs\`.\n\n` +
+          `Run the pre-commit hook or \`coderef check\` to audit all references.`
+        ),
+        wordRange
       );
-      return new vscode.Hover(md, wordRange);
     }
 
     const uri = this.refs.resolveUri(uuid);
-    const md = new vscode.MarkdownString();
+    const md  = new vscode.MarkdownString();
     md.isTrusted = true;
-    md.appendMarkdown(`**coderef** \`${uuid}\`\n\n`);
+    md.appendMarkdown(`**coderef** \`${uuid}\``);
+    if (entry.name) md.appendMarkdown(` — *${entry.name}*`);
+    md.appendMarkdown(`\n\n`);
 
-    const loc = entryLocation(entry);
     if (uri) {
-      const target = uri.with({ fragment: `L${entry.line}` });
-      const kind = entry.endLine ? " *(range)*" : "";
-      md.appendMarkdown(
-        `📍 [\`${loc}\`](${target})${kind}\n\n` +
-          `[Open file](${target})`
-      );
+      const target  = uri.with({ fragment: `L${entry.line}` });
+      const locStr  = entryLocation(entry);
+      const badge   = entry.endLine ? " *(range)*" : "";
+      md.appendMarkdown(`📍 [\`${locStr}\`](${target})${badge}\n\n[Open file](${target})`);
     } else {
-      md.appendMarkdown(`📍 \`${loc}\``);
+      md.appendMarkdown(`📍 \`${entryLocation(entry)}\``);
     }
 
     return new vscode.Hover(md, wordRange);
@@ -285,17 +258,14 @@ class ToRefDefinitionProvider implements vscode.DefinitionProvider {
     );
     if (!wordRange) return undefined;
 
-    const uuid = document.getText(wordRange).slice("to_ref:".length);
+    const uuid  = document.getText(wordRange).slice("to_ref:".length);
     const entry = this.refs.resolve(uuid);
     if (!entry) return undefined;
-
     const uri = this.refs.resolveUri(uuid);
     if (!uri) return undefined;
 
-    // For ranges, return a Location spanning the full block so the editor
-    // highlights the selected region when navigating via F12.
     const startPos = new vscode.Position(entry.line - 1, 0);
-    const endPos = entry.endLine
+    const endPos   = entry.endLine
       ? new vscode.Position(entry.endLine - 1, Number.MAX_SAFE_INTEGER)
       : startPos;
     return new vscode.Location(uri, new vscode.Range(startPos, endPos));
@@ -315,36 +285,31 @@ class DiagnosticsProvider implements vscode.Disposable {
       .getConfiguration("coderef")
       .get<string>("diagnosticSeverity", "warning");
     switch (cfg) {
-      case "error":
-        return vscode.DiagnosticSeverity.Error;
-      case "information":
-        return vscode.DiagnosticSeverity.Information;
-      case "hint":
-        return vscode.DiagnosticSeverity.Hint;
-      default:
-        return vscode.DiagnosticSeverity.Warning;
+      case "error":       return vscode.DiagnosticSeverity.Error;
+      case "information": return vscode.DiagnosticSeverity.Information;
+      case "hint":        return vscode.DiagnosticSeverity.Hint;
+      default:            return vscode.DiagnosticSeverity.Warning;
     }
   }
 
   update(document: vscode.TextDocument): void {
     const diags: vscode.Diagnostic[] = [];
     const text = document.getText();
-    const sev = this.severity();
+    const sev  = this.severity();
 
     TO_REF_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = TO_REF_RE.exec(text)) !== null) {
-      const uuid = m[1];
-      if (!this.refs.has(uuid)) {
+      if (!this.refs.has(m[1])) {
         const start = document.positionAt(m.index);
-        const end = document.positionAt(m.index + m[0].length);
+        const end   = document.positionAt(m.index + m[0].length);
         const d = new vscode.Diagnostic(
           new vscode.Range(start, end),
-          `coderef: dangling reference — '${uuid}' not found in .refs`,
+          `coderef: dangling reference — '${m[1]}' not found in .refs`,
           sev
         );
         d.source = "coderef";
-        d.code = "dangling-ref";
+        d.code   = "dangling-ref";
         diags.push(d);
       }
     }
@@ -358,12 +323,46 @@ class DiagnosticsProvider implements vscode.Disposable {
     }
   }
 
-  clear(uri: vscode.Uri): void {
-    this.collection.delete(uri);
-  }
+  clear(uri: vscode.Uri): void { this.collection.delete(uri); }
+  dispose(): void { this.collection.dispose(); }
+}
 
-  dispose(): void {
-    this.collection.dispose();
+// ── Completion provider (to_ref: autocomplete) ───────────────────────────────
+
+class ToRefCompletionProvider implements vscode.CompletionItemProvider {
+  constructor(private readonly refs: RefsManager) {}
+
+  provideCompletionItems(
+    document: vscode.TextDocument,
+    position: vscode.Position
+  ): vscode.CompletionItem[] {
+    // Only trigger when the text before the cursor ends with `to_ref:`
+    const linePrefix = document.lineAt(position).text.slice(0, position.character);
+    if (!linePrefix.endsWith("to_ref:")) return [];
+
+    const items: vscode.CompletionItem[] = [];
+
+    for (const [uuid, entry] of this.refs.all()) {
+      const label = uuid;
+      const item  = new vscode.CompletionItem(label, vscode.CompletionItemKind.Reference);
+
+      item.insertText  = uuid;
+      item.detail      = entryLocation(entry);
+      item.filterText  = `${uuid} ${entry.name ?? ""} ${entry.relPath}`;
+
+      const md = new vscode.MarkdownString();
+      md.appendMarkdown(`**${uuid}**`);
+      if (entry.name) md.appendMarkdown(` — *${entry.name}*`);
+      md.appendMarkdown(`\n\n📍 \`${entryLocation(entry)}\``);
+      item.documentation = md;
+
+      // Sort: named refs first, then by UUID
+      item.sortText = entry.name ? `0_${uuid}` : `1_${uuid}`;
+
+      items.push(item);
+    }
+
+    return items;
   }
 }
 
@@ -380,43 +379,38 @@ const SLASH_LANGS = new Set([
   "scala", "dart", "php", "css", "scss", "less", "groovy", "json5",
 ]);
 const DASHDASH_LANGS = new Set(["sql", "lua", "haskell", "elm"]);
-const SEMI_LANGS = new Set(["clojure", "lisp", "scheme", "racket"]);
-const PERCENT_LANGS = new Set(["erlang", "latex", "matlab"]);
+const SEMI_LANGS     = new Set(["clojure", "lisp", "scheme", "racket"]);
+const PERCENT_LANGS  = new Set(["erlang", "latex", "matlab"]);
 
 function commentPrefix(langId: string): string {
-  if (HASH_LANGS.has(langId)) return "#";
-  if (SLASH_LANGS.has(langId)) return "//";
+  if (HASH_LANGS.has(langId))     return "#";
+  if (SLASH_LANGS.has(langId))    return "//";
   if (DASHDASH_LANGS.has(langId)) return "--";
-  if (SEMI_LANGS.has(langId)) return ";";
-  if (PERCENT_LANGS.has(langId)) return "%";
+  if (SEMI_LANGS.has(langId))     return ";";
+  if (PERCENT_LANGS.has(langId))  return "%";
   return "//";
 }
 
 // ── Activate ──────────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
-  const refs = new RefsManager();
-  refs.activate(context);
-
-  const hints = new InlineHintProvider(refs);
+  const refs        = new RefsManager();
+  const hints       = new InlineHintProvider(refs);
   const diagnostics = new DiagnosticsProvider(refs);
 
+  refs.activate(context);
   context.subscriptions.push(refs, hints, diagnostics);
 
   // ── Language providers ─────────────────────────────────────────────────────
   const selector: vscode.DocumentSelector = { scheme: "file" };
   context.subscriptions.push(
-    vscode.languages.registerDocumentLinkProvider(
+    vscode.languages.registerDocumentLinkProvider(selector, new ToRefLinkProvider(refs)),
+    vscode.languages.registerHoverProvider(selector, new ToRefHoverProvider(refs)),
+    vscode.languages.registerDefinitionProvider(selector, new ToRefDefinitionProvider(refs)),
+    vscode.languages.registerCompletionItemProvider(
       selector,
-      new ToRefLinkProvider(refs)
-    ),
-    vscode.languages.registerHoverProvider(
-      selector,
-      new ToRefHoverProvider(refs)
-    ),
-    vscode.languages.registerDefinitionProvider(
-      selector,
-      new ToRefDefinitionProvider(refs)
+      new ToRefCompletionProvider(refs),
+      ":"  // trigger character — fires when user types `to_ref:`
     )
   );
 
@@ -428,28 +422,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // ── Refresh on editor events ───────────────────────────────────────────────
   vscode.window.onDidChangeActiveTextEditor(
-    (editor) => {
-      if (editor) {
-        hints.update(editor);
-        diagnostics.update(editor.document);
-      }
-    },
-    null,
-    context.subscriptions
+    (editor) => { if (editor) { hints.update(editor); diagnostics.update(editor.document); } },
+    null, context.subscriptions
   );
-
   vscode.window.onDidChangeVisibleTextEditors(
-    (editors) => {
-      for (const editor of editors) {
-        hints.update(editor);
-        diagnostics.update(editor.document);
-      }
-    },
-    null,
-    context.subscriptions
+    (editors) => { for (const e of editors) { hints.update(e); diagnostics.update(e.document); } },
+    null, context.subscriptions
   );
 
-  // Debounced update on document edits
   let debounce: ReturnType<typeof setTimeout> | undefined;
   vscode.workspace.onDidChangeTextDocument(
     (event) => {
@@ -462,26 +442,36 @@ export function activate(context: vscode.ExtensionContext): void {
         diagnostics.update(event.document);
       }, 250);
     },
-    null,
-    context.subscriptions
+    null, context.subscriptions
   );
-
-  // Clear diagnostics when a document is closed
   vscode.workspace.onDidCloseTextDocument(
     (doc) => diagnostics.clear(doc.uri),
-    null,
-    context.subscriptions
+    null, context.subscriptions
   );
 
-  // ── Insert ref command ─────────────────────────────────────────────────────
+  // ── Insert point ref command ───────────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("coderef.insertRef", async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
 
-      const uuid = randomBytes(4).toString("hex");
+      const uuid   = randomBytes(4).toString("hex");
       const prefix = commentPrefix(editor.document.languageId);
-      const anchor = `${prefix} ref:${uuid}`;
+
+      // Optionally prompt for a name
+      const name = await vscode.window.showInputBox({
+        prompt: "Optional name for this anchor (e.g. auth-guard) — leave blank to skip",
+        placeHolder: "my-anchor-name",
+        validateInput: (v) =>
+          !v || /^[a-z][a-z0-9-]*$/.test(v)
+            ? undefined
+            : "Name must be lowercase letters, digits, and hyphens only",
+      });
+      if (name === undefined) return; // user cancelled
+
+      const anchor = name
+        ? `${prefix} ref:${uuid}:${name}`
+        : `${prefix} ref:${uuid}`;
 
       await editor.edit((eb) => {
         for (const sel of editor.selections) {
@@ -491,30 +481,26 @@ export function activate(context: vscode.ExtensionContext): void {
       });
 
       await vscode.window.showInformationMessage(
-        `coderef: inserted ref:${uuid}  (run git commit to update .refs)`
+        `coderef: inserted ${name ? `ref:${uuid}:${name}` : `ref:${uuid}`}  (run git commit to update .refs)`
       );
     })
   );
 
-  // ── Insert range-ref command ───────────────────────────────────────────────
+  // ── Insert range ref command ───────────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("coderef.insertRangeRef", async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
 
-      const uuid = randomBytes(4).toString("hex");
+      const uuid   = randomBytes(4).toString("hex");
       const prefix = commentPrefix(editor.document.languageId);
-
-      // If the selection spans multiple lines, wrap the first and last lines.
-      // Otherwise just insert :start on the current line (user places :end).
-      const sel = editor.selection;
+      const sel    = editor.selection;
       const multiLine = sel.end.line > sel.start.line;
 
       await editor.edit((eb) => {
         if (multiLine) {
           const startLineEnd = editor.document.lineAt(sel.start.line).range.end;
           const endLineEnd   = editor.document.lineAt(sel.end.line).range.end;
-          // Insert :end first so that inserting :start doesn't shift the end offset
           eb.insert(endLineEnd,   `  ${prefix} ref:${uuid}:end`);
           eb.insert(startLineEnd, `  ${prefix} ref:${uuid}:start`);
         } else {
@@ -530,11 +516,8 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  // Initial pass over already-open editors
   hints.updateAll();
   diagnostics.updateAll();
 }
 
-export function deactivate(): void {
-  // VSCode disposes subscriptions automatically
-}
+export function deactivate(): void {}

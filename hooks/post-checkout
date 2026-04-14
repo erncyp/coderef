@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# coderef post-checkout hook
+# Refreshes .refs after branch switches and file checkouts so the mapping
+# stays current without requiring a new commit.
+#
+# Git passes three arguments: previous HEAD, new HEAD, and a flag (1=branch
+# checkout, 0=file checkout). We only refresh on branch checkouts.
+
+prev_head="$1"
+new_head="$2"
+is_branch_checkout="$3"
+
+# Skip file-level checkouts (only care about branch switches)
+if [[ "$is_branch_checkout" != "1" ]]; then
+    exit 0
+fi
+
+# Skip if HEAD didn't change (e.g. re-checking out the same branch)
+if [[ "$prev_head" == "$new_head" ]]; then
+    exit 0
+fi
+
+HOOK_DIR="$(dirname "$0")"
+python3 "$HOOK_DIR/pre-commit" --no-stage

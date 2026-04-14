@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# coderef post-merge hook
+# Refreshes .refs after a merge (including `git pull`) so the mapping
+# reflects any anchors added or moved in the merged commits.
+
+HOOK_DIR="$(dirname "$0")"
+python3 "$HOOK_DIR/pre-commit" --no-stage

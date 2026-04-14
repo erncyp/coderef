@@ -1,0 +1,35 @@
+name: coderef integrity check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    name: Check for dangling refs
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install coderef CLI
+        run: |
+          # Make the CLI executable and add it to PATH.
+          # Adjust this path if coderef lives in a subdirectory of your repo.
+          chmod +x cli/coderef
+          echo "$PWD/cli" >> "$GITHUB_PATH"
+
+      - name: Scan anchors and rebuild .refs
+        # Re-scan on CI so the check reflects the current commit, not a
+        # possibly-stale checked-in .refs file.
+        run: coderef scan
+
+      - name: Check for dangling to_ref: references
+        # Exits 1 if any to_ref: UUID has no matching ref: anchor in .refs.
+        # Add --strict to also fail on orphan anchors (ref: with no to_ref:).
+        run: coderef check

@@ -17,22 +17,47 @@ import shutil
 import stat
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # ── Patterns ──────────────────────────────────────────────────────────────────
 
-# Matches  ref:UUID:start  or  ref:UUID:end
-REF_RANGE_RE = re.compile(
-    r'(?<![a-zA-Z_])ref:([a-f0-9]{8}):(start|end)(?![a-zA-Z0-9_])'
+# Single pattern for all ref: marker forms (matches hook's REF_MARKER_RE)
+# group(1) = UUID,  group(2) = suffix (start|end|name) or None
+REF_MARKER_RE = re.compile(
+    r'(?<![a-zA-Z_])ref:([a-f0-9]{8})(?::(start|end|[a-z][a-z0-9-]*))?(?![a-f0-9:])'
 )
-# Matches  ref:UUID  plain point anchors (NOT followed by `:` or more hex)
-REF_POINT_RE = re.compile(
-    r'(?<![a-zA-Z_])ref:([a-f0-9]{8})(?![a-f0-9:])'
-)
-# Matches  to_ref:UUID
 TO_REF_RE = re.compile(r'\bto_ref:([a-f0-9]{8})(?![a-f0-9])')
 
 REFS_FILENAME = ".refs"
+
+
+# ── Data types ────────────────────────────────────────────────────────────────
+
+@dataclass
+class RefInfo:
+    location: str          # "file:line" or "file:start-end"
+    kind: str              # "point" or "range"
+    name: str | None = None
+
+    @property
+    def display(self) -> str:
+        return f"{self.location} ({self.name})" if self.name else self.location
+
+    @property
+    def file(self) -> str:
+        return self.location.rsplit(":", 1)[0]
+
+    @property
+    def start_line(self) -> int:
+        suffix = self.location.rsplit(":", 1)[1]
+        return int(suffix.split("-")[0])
+
+    @property
+    def end_line(self) -> int | None:
+        suffix = self.location.rsplit(":", 1)[1]
+        parts = suffix.split("-")
+        return int(parts[1]) if len(parts) == 2 else None
 
 
 # ── Low-level helpers ─────────────────────────────────────────────────────────
@@ -47,7 +72,6 @@ def find_repo_root() -> Path | None:
             return Path(result.stdout.strip())
     except FileNotFoundError:
         pass
-    # Fallback: walk up looking for .refs
     cur = Path.cwd()
     while True:
         if (cur / REFS_FILENAME).exists():
@@ -73,19 +97,45 @@ def tracked_files(root: Path) -> list[str]:
     return result.stdout.splitlines()
 
 
-def load_refs(root: Path) -> dict[str, str]:
-    """Return {uuid: location_string} from .refs.  location is 'file:line' or 'file:start-end'."""
+def _parse_refs_line(raw: str) -> tuple[str, str, str | None]:
+    """
+    Parse a .refs line value (everything after the UUID).
+    Returns (location, kind, name_or_None).
+
+    Formats:
+      file:line              → point, no name
+      file:line name         → point, named
+      file:start-end         → range, no name
+    """
+    # Try to split off an optional trailing name token
+    parts = raw.rsplit(None, 1)
+    name: str | None = None
+    location = raw
+
+    if len(parts) == 2 and re.match(r'^[a-z][a-z0-9-]*$', parts[1]):
+        # The last token looks like a name — but only if the first part is a
+        # valid location (ends in :digits or :digits-digits)
+        if re.search(r':\d+(-\d+)?$', parts[0]):
+            location, name = parts[0], parts[1]
+
+    kind = "range" if re.search(r':\d+-\d+$', location) else "point"
+    return location, kind, name
+
+
+def load_refs(root: Path) -> dict[str, RefInfo]:
     refs_path = root / REFS_FILENAME
     if not refs_path.exists():
         return {}
-    refs: dict[str, str] = {}
+    refs: dict[str, RefInfo] = {}
     for line in refs_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         parts = line.split(None, 1)
         if len(parts) == 2:
-            refs[parts[0]] = parts[1]
+            uuid, raw = parts
+            location, kind, name = _parse_refs_line(raw)
+            refs[uuid] = RefInfo(location=location, kind=kind, name=name)
     return refs
 
 
@@ -98,22 +148,17 @@ def _read_text(path: Path) -> str | None:
 
 # ── Scanning helpers (shared by scan, check, graph) ──────────────────────────
 
-def scan_anchors(
-    root: Path,
-    files: list[str] | None = None,
-) -> dict[str, str]:
+def scan_anchors(root: Path, files: list[str] | None = None) -> dict[str, RefInfo]:
     """
-    Scan source files for ref: anchors and return {uuid: 'relpath:line'} for
-    point refs and {uuid: 'relpath:startline-endline'} for range refs.
-
-    Warnings about duplicates and unmatched range pairs are printed to stderr.
+    Scan source files for ref: anchors.
+    Returns {uuid: RefInfo} with location, kind, and optional name.
     """
     if files is None:
         files = tracked_files(root)
 
     starts: dict[str, str] = {}
     ends:   dict[str, str] = {}
-    points: dict[str, str] = {}
+    points: dict[str, tuple[str, str | None]] = {}  # uuid -> (loc, name)
 
     for rel in files:
         if rel == REFS_FILENAME:
@@ -127,21 +172,23 @@ def scan_anchors(
 
         for lineno, line in enumerate(text.splitlines(), start=1):
             loc = f"{rel}:{lineno}"
+            for m in REF_MARKER_RE.finditer(line):
+                uuid, suffix = m.group(1), m.group(2)
 
-            for m in REF_RANGE_RE.finditer(line):
-                uuid, kind = m.group(1), m.group(2)
-                bucket = starts if kind == "start" else ends
-                if uuid in bucket:
-                    print(f"coderef: warning: duplicate ref:{uuid}:{kind} at {loc}", file=sys.stderr)
-                bucket[uuid] = loc
+                if suffix == "start":
+                    if uuid in starts:
+                        print(f"coderef: warning: duplicate ref:{uuid}:start at {loc}", file=sys.stderr)
+                    starts[uuid] = loc
+                elif suffix == "end":
+                    if uuid in ends:
+                        print(f"coderef: warning: duplicate ref:{uuid}:end at {loc}", file=sys.stderr)
+                    ends[uuid] = loc
+                else:
+                    if uuid in points:
+                        print(f"coderef: warning: duplicate ref:{uuid} at {loc}", file=sys.stderr)
+                    points[uuid] = (loc, suffix)  # suffix is name or None
 
-            for m in REF_POINT_RE.finditer(line):
-                uuid = m.group(1)
-                if uuid in points:
-                    print(f"coderef: warning: duplicate ref:{uuid} at {loc}", file=sys.stderr)
-                points[uuid] = loc
-
-    refs: dict[str, str] = {}
+    result: dict[str, RefInfo] = {}
 
     for uuid in sorted(set(starts) | set(ends)):
         if uuid not in starts:
@@ -153,32 +200,27 @@ def scan_anchors(
         sf, sl = starts[uuid].rsplit(":", 1)
         ef, el = ends[uuid].rsplit(":", 1)
         if sf != ef:
-            print(f"coderef: warning: ref:{uuid} :start/{sf} and :end/{ef} in different files — skipped", file=sys.stderr)
+            print(f"coderef: warning: ref:{uuid} :start/{sf} and :end/{ef} in different files — skipped",
+                  file=sys.stderr)
             continue
-        refs[uuid] = f"{sf}:{sl}-{el}"
+        result[uuid] = RefInfo(location=f"{sf}:{sl}-{el}", kind="range")
 
-    for uuid, loc in sorted(points.items()):
-        if uuid in refs:
-            print(f"coderef: warning: ref:{uuid} used as both point and range — skipped point", file=sys.stderr)
+    for uuid, (loc, name) in sorted(points.items()):
+        if uuid in result:
+            print(f"coderef: warning: ref:{uuid} used as both point and range — skipped point",
+                  file=sys.stderr)
         else:
-            refs[uuid] = loc
+            result[uuid] = RefInfo(location=loc, kind="point", name=name)
 
-    return refs
+    return result
 
 
-def scan_to_refs(
-    root: Path,
-    files: list[str] | None = None,
-) -> dict[str, list[dict]]:
-    """
-    Scan source files for to_ref: references.
-    Returns {uuid: [{"file": rel, "line": n}, ...]}
-    """
+def scan_to_refs(root: Path, files: list[str] | None = None) -> dict[str, list[dict]]:
+    """Scan for to_ref: occurrences. Returns {uuid: [{file, line}, ...]}."""
     if files is None:
         files = tracked_files(root)
 
     result: dict[str, list[dict]] = {}
-
     for rel in files:
         if rel == REFS_FILENAME:
             continue
@@ -188,7 +230,6 @@ def scan_to_refs(
         text = _read_text(full)
         if text is None:
             continue
-
         for lineno, line in enumerate(text.splitlines(), start=1):
             for m in TO_REF_RE.finditer(line):
                 uuid = m.group(1)
@@ -197,10 +238,14 @@ def scan_to_refs(
     return result
 
 
-def _location_kind(loc: str) -> str:
-    """Return 'range' if location has a line range (e.g. file:14-28), else 'point'."""
-    suffix = loc.rsplit(":", 1)[-1]
-    return "range" if "-" in suffix else "point"
+def _refs_to_file_lines(refs: dict[str, RefInfo]) -> list[str]:
+    lines = []
+    for uuid, info in sorted(refs.items()):
+        val = info.location
+        if info.name:
+            val += f" {info.name}"
+        lines.append(f"{uuid} {val}\n")
+    return lines
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -214,40 +259,30 @@ def cmd_resolve(args) -> None:
         print(f"error: uuid '{uuid}' not found in .refs", file=sys.stderr)
         sys.exit(1)
 
-    loc = refs[uuid]
-    print(loc)
+    info = refs[uuid]
+    print(info.display)
 
     if args.context == 0:
         return
 
-    # Parse location
-    # Point:  relpath:line
-    # Range:  relpath:startline-endline
-    try:
-        path_part, line_part = loc.rsplit(":", 1)
-        if "-" in line_part:
-            start_line, end_line = (int(x) for x in line_part.split("-", 1))
-        else:
-            start_line = end_line = int(line_part)
-    except ValueError:
-        return  # malformed — silently skip context
+    start_line = info.start_line
+    end_line   = info.end_line or start_line
 
-    full = root / path_part
+    full = root / info.file
     text = _read_text(full)
     if text is None:
-        print(f"error: could not read {path_part}", file=sys.stderr)
+        print(f"error: could not read {info.file}", file=sys.stderr)
         return
 
     source_lines = text.splitlines()
-    total = len(source_lines)
-
-    ctx = args.context
-    view_start = max(1, start_line - ctx)
-    view_end   = min(total, end_line + ctx)
-    width      = len(str(view_end))
+    total  = len(source_lines)
+    ctx    = args.context
+    v_from = max(1, start_line - ctx)
+    v_to   = min(total, end_line + ctx)
+    width  = len(str(v_to))
 
     print()
-    for n in range(view_start, view_end + 1):
+    for n in range(v_from, v_to + 1):
         marker = ">" if start_line <= n <= end_line else " "
         print(f"  {marker} {str(n).rjust(width)}: {source_lines[n - 1]}")
 
@@ -258,9 +293,8 @@ def cmd_list(args) -> None:
     if not refs:
         print("(no refs found)")
         return
-    for uuid, loc in sorted(refs.items()):
-        kind = "range" if _location_kind(loc) == "range" else "point"
-        print(f"{uuid}  {loc}  [{kind}]")
+    for uuid, info in sorted(refs.items()):
+        print(f"{uuid}  {info.display}  [{info.kind}]")
 
 
 def cmd_check(args) -> None:
@@ -269,16 +303,16 @@ def cmd_check(args) -> None:
     files = tracked_files(root)
     to_refs = scan_to_refs(root, files)
 
-    # ── Dangling: to_ref: UUID that isn't in .refs ────────────────────────────
+    # Dangling: to_ref: UUID not in .refs
     dangling: list[tuple[str, int, str]] = []
     for uuid, occurrences in sorted(to_refs.items()):
         if uuid not in refs:
             for occ in occurrences:
                 dangling.append((occ["file"], occ["line"], uuid))
 
-    # ── Orphans: UUID in .refs that no to_ref: points at ────────────────────
+    # Orphans: UUID in .refs with no to_ref: anywhere
     referenced = set(to_refs.keys())
-    orphans = [(uuid, loc) for uuid, loc in sorted(refs.items()) if uuid not in referenced]
+    orphans = [(uuid, info) for uuid, info in sorted(refs.items()) if uuid not in referenced]
 
     ok = True
 
@@ -291,19 +325,23 @@ def cmd_check(args) -> None:
     if orphans:
         if dangling:
             print()
-        label = "ORPHAN ref:" if not args.strict else "ORPHAN ref: (failing due to --strict)"
-        print(f"{label} (anchor exists in .refs but is never referenced)")
-        for uuid, loc in orphans:
-            print(f"  {uuid}  {loc}")
+        label = "ORPHAN ref: (anchor exists in .refs but is never referenced)"
+        if args.strict:
+            label += "  [--strict: failing]"
+        print(label)
+        for uuid, info in orphans:
+            print(f"  {uuid}  {info.display}  [{info.kind}]")
         if args.strict:
             ok = False
 
     if ok and not orphans:
-        ranges = sum(1 for v in refs.values() if _location_kind(v) == "range")
-        pts = len(refs) - ranges
-        parts = []
+        ranges = sum(1 for i in refs.values() if i.kind == "range")
+        named  = sum(1 for i in refs.values() if i.name)
+        pts    = len(refs) - ranges
+        parts  = []
         if pts:    parts.append(f"{pts} point{'s' if pts != 1 else ''}")
         if ranges: parts.append(f"{ranges} range{'s' if ranges != 1 else ''}")
+        if named:  parts.append(f"{named} named")
         print(f"ok: no issues ({', '.join(parts) or '0 anchors'})")
     elif ok:
         print(f"\nok: {len(orphans)} orphan(s) — use --strict to fail on orphans")
@@ -320,32 +358,33 @@ def cmd_scan(args) -> None:
     if args.dry_run:
         added   = {u: v for u, v in new_refs.items() if u not in old_refs}
         removed = {u: v for u, v in old_refs.items() if u not in new_refs}
-        changed = {u: v for u, v in new_refs.items() if u in old_refs and old_refs[u] != v}
+        changed = {u: v for u, v in new_refs.items()
+                   if u in old_refs and old_refs[u].display != v.display}
         unchanged = len(new_refs) - len(added) - len(changed)
 
-        if added:
-            for u, v in sorted(added.items()):
-                print(f"  + {u}  {v}")
-        if changed:
-            for u, v in sorted(changed.items()):
-                print(f"  ~ {u}  {old_refs[u]}  →  {v}")
-        if removed:
-            for u, v in sorted(removed.items()):
-                print(f"  - {u}  {v}")
+        for u, v in sorted(added.items()):
+            print(f"  + {u}  {v.display}  [{v.kind}]")
+        for u, v in sorted(changed.items()):
+            print(f"  ~ {u}  {old_refs[u].display}  →  {v.display}  [{v.kind}]")
+        for u, v in sorted(removed.items()):
+            print(f"  - {u}  {v.display}  [{v.kind}]")
         if not (added or changed or removed):
             print(".refs is already up to date")
         else:
-            print(f"\n(dry run — {len(added)} added, {len(changed)} changed, {len(removed)} removed, {unchanged} unchanged)")
+            print(f"\n(dry run — {len(added)} added, {len(changed)} changed, "
+                  f"{len(removed)} removed, {unchanged} unchanged)")
         return
 
-    lines = [f"{uuid} {loc}\n" for uuid, loc in sorted(new_refs.items())]
+    lines = _refs_to_file_lines(new_refs)
     (root / REFS_FILENAME).write_text("".join(lines), encoding="utf-8")
 
-    ranges = sum(1 for v in new_refs.values() if _location_kind(v) == "range")
-    pts = len(new_refs) - ranges
-    parts = []
+    ranges = sum(1 for i in new_refs.values() if i.kind == "range")
+    named  = sum(1 for i in new_refs.values() if i.name)
+    pts    = len(new_refs) - ranges
+    parts  = []
     if pts:    parts.append(f"{pts} point{'s' if pts != 1 else ''}")
     if ranges: parts.append(f"{ranges} range{'s' if ranges != 1 else ''}")
+    if named:  parts.append(f"{named} named")
     print(f"coderef: .refs updated ({', '.join(parts) or '0 anchors'})")
 
 
@@ -356,14 +395,14 @@ def cmd_graph(args) -> None:
     to_refs = scan_to_refs(root, files)
 
     graph: dict[str, dict] = {}
-    for uuid, loc in sorted(refs.items()):
+    for uuid, info in sorted(refs.items()):
         graph[uuid] = {
-            "location": loc,
-            "kind": _location_kind(loc),
+            "location": info.location,
+            "kind": info.kind,
+            **({"name": info.name} if info.name else {}),
             "referenced_by": to_refs.get(uuid, []),
         }
 
-    # Also include dangling to_refs so the full picture is visible
     for uuid, occurrences in sorted(to_refs.items()):
         if uuid not in graph:
             graph[uuid] = {
@@ -384,27 +423,25 @@ def cmd_install(args) -> None:
         sys.exit(1)
 
     script_dir = Path(__file__).resolve().parent
-    repo_hook = script_dir.parent / "hooks" / "pre-commit"
-    if not repo_hook.exists():
-        print(f"error: hook source not found at {repo_hook}", file=sys.stderr)
+    coderef_hooks = script_dir.parent / "hooks"
+    if not (coderef_hooks / "pre-commit").exists():
+        print(f"error: hook source not found at {coderef_hooks}", file=sys.stderr)
         sys.exit(1)
 
-    dst = hooks_dir / "pre-commit"
-    if dst.exists():
-        backup = dst.with_suffix(".bak")
-        shutil.copy2(dst, backup)
-        print(f"coderef: existing hook backed up to {backup}")
-
-    shutil.copy2(repo_hook, dst)
-    dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    print(f"coderef: hook installed at {dst}")
-
-    refs_path = root / REFS_FILENAME
-    if not refs_path.exists():
-        refs_path.write_text("", encoding="utf-8")
-        print("coderef: created empty .refs")
-
-    print("coderef: installation complete")
+    # Install via the bundled shell script for consistency
+    install_sh = script_dir.parent / "install.sh"
+    if install_sh.exists():
+        subprocess.run(["bash", str(install_sh), str(root)], check=True)
+    else:
+        # Fallback: copy pre-commit directly
+        dst = hooks_dir / "pre-commit"
+        shutil.copy2(coderef_hooks / "pre-commit", dst)
+        dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        print(f"coderef: hook installed at {dst}")
+        refs_path = root / REFS_FILENAME
+        if not refs_path.exists():
+            refs_path.write_text("", encoding="utf-8")
+        print("coderef: installation complete")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -419,10 +456,8 @@ def main() -> None:
     # resolve
     p = sub.add_parser("resolve", help="Resolve a UUID to its file:line location")
     p.add_argument("uuid", help="8-char hex UUID")
-    p.add_argument(
-        "--context", "-C", metavar="N", type=int, default=0,
-        help="Show N lines of source context around the anchor (default: 0)",
-    )
+    p.add_argument("--context", "-C", metavar="N", type=int, default=0,
+                   help="Show N lines of source context around the anchor (default: 0)")
     p.set_defaults(func=cmd_resolve)
 
     # list
@@ -430,36 +465,26 @@ def main() -> None:
     p.set_defaults(func=cmd_list)
 
     # check
-    p = sub.add_parser(
-        "check",
-        help="Audit refs: report dangling to_ref: and orphan ref: anchors",
-    )
-    p.add_argument(
-        "--strict", action="store_true",
-        help="Exit 1 on orphan anchors as well as dangling refs",
-    )
+    p = sub.add_parser("check",
+                       help="Audit refs: report dangling to_ref: and orphan ref: anchors")
+    p.add_argument("--strict", action="store_true",
+                   help="Exit 1 on orphan anchors as well as dangling refs")
     p.set_defaults(func=cmd_check)
 
     # scan
-    p = sub.add_parser(
-        "scan",
-        help="Scan source files and rewrite .refs (no git commit required)",
-    )
-    p.add_argument(
-        "--dry-run", "-n", action="store_true",
-        help="Show what would change without writing .refs",
-    )
+    p = sub.add_parser("scan",
+                       help="Scan source files and rewrite .refs (no git commit required)")
+    p.add_argument("--dry-run", "-n", action="store_true",
+                   help="Show what would change without writing .refs")
     p.set_defaults(func=cmd_scan)
 
     # graph
-    p = sub.add_parser(
-        "graph",
-        help="Emit the full anchor→reference graph as JSON",
-    )
+    p = sub.add_parser("graph",
+                       help="Emit the full anchor→reference graph as JSON")
     p.set_defaults(func=cmd_graph)
 
     # install
-    p = sub.add_parser("install", help="Install the git pre-commit hook")
+    p = sub.add_parser("install", help="Install the git hooks (pre-commit, post-checkout, post-merge)")
     p.set_defaults(func=cmd_install)
 
     args = parser.parse_args()
