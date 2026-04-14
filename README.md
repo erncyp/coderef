@@ -2,7 +2,7 @@
 
 Stable UUID-based code anchors that survive renames, moves, and refactors.
 
-Embed a `ref:` anchor anywhere in source code. Reference it from elsewhere with `to_ref:`. A git hook keeps a `.refs` mapping file up to date with the current location of every anchor. A VSCode extension turns `to_ref:` tags into clickable, hoverable navigation.
+Embed a `ref:` anchor anywhere in source code. Reference it from elsewhere with `to_ref:`. A git hook keeps a `.coderef` mapping file up to date with the current location of every anchor. A VSCode extension turns `to_ref:` tags into clickable, hoverable navigation.
 
 ```python
 # src/auth/middleware.py
@@ -26,8 +26,8 @@ def check_token(request):
 |---|---|
 | `ref:<uuid>` | Marks a location as a stable anchor |
 | `to_ref:<uuid>` | References that anchor from anywhere |
-| `.refs` | Maps each UUID to its current `file:line` |
-| `hooks/pre-commit` | Rewrites `.refs` on every commit |
+| `.coderef` | Maps each UUID to its current `file:line` |
+| `hooks/pre-commit` | Rewrites `.coderef` on every commit |
 | `cli/coderef` | CLI for resolving refs and checking for broken ones |
 | `vscode-extension/` | Inline hints, hover, go-to-definition, diagnostics |
 
@@ -58,18 +58,18 @@ cd /your/project
 /path/to/coderef/cli/coderef install
 ```
 
-This copies `hooks/pre-commit` into your project's `.git/hooks/` and creates an empty `.refs` file if one doesn't exist. Any existing pre-commit hook is backed up as `pre-commit.bak`.
+This copies `hooks/pre-commit` into your project's `.git/hooks/` and creates an empty `.coderef` file if one doesn't exist. Any existing pre-commit hook is backed up as `pre-commit.bak`.
 
 **Requirements:** Python 3.9+ on `PATH`.
 
-### 3. Commit `.refs` to your repository
+### 3. Commit `.coderef` to your repository
 
 ```bash
-git add .refs
-git commit -m "add coderef .refs"
+git add .coderef
+git commit -m "add coderef .coderef"
 ```
 
-From now on, every `git commit` automatically updates `.refs`.
+From now on, every `git commit` automatically updates `.coderef`.
 
 ---
 
@@ -106,7 +106,7 @@ result = auth.check(request)
 
 ### After committing
 
-The pre-commit hook updates `.refs` automatically:
+The pre-commit hook updates `.coderef` automatically:
 
 ```
 a3f9c821 src/auth/middleware.py:14
@@ -142,7 +142,7 @@ a3f9c821  src/auth/middleware.py:14
 b7d2e104  src/api/server.ts:42
 
 $ coderef check
-ok: no dangling refs (2 anchor(s) in .refs)
+ok: no dangling refs (2 anchor(s) in .coderef)
 
 # Dangling ref example:
 $ coderef check
@@ -198,7 +198,7 @@ Press F12 or Ctrl+click on any `to_ref:<uuid>` to jump directly to the anchor's 
 
 **Dangling ref diagnostics**
 
-`to_ref:` tags whose UUID is not in `.refs` are underlined as warnings. The severity is configurable.
+`to_ref:` tags whose UUID is not in `.coderef` are underlined as warnings. The severity is configurable.
 
 **Insert anchor command**
 
@@ -213,7 +213,7 @@ Open the Command Palette (`Ctrl+Shift+P`) and run **Coderef: Insert New ref: Anc
 
 ---
 
-## .refs file format
+## .coderef file format
 
 Plain text, one entry per line:
 
@@ -243,13 +243,13 @@ Both tags are language-agnostic and can appear inside any comment style. The pat
 ## FAQ
 
 **What if I move a file?**
-The pre-commit hook rescans all tracked files on your next commit and updates `.refs` with the new path automatically.
+The pre-commit hook rescans all tracked files on your next commit and updates `.coderef` with the new path automatically.
 
 **What if I delete a `ref:` anchor?**
-The UUID disappears from `.refs` after the next commit. Any remaining `to_ref:` tags pointing to it become dangling references — the VSCode extension flags them and `coderef check` exits 1.
+The UUID disappears from `.coderef` after the next commit. Any remaining `to_ref:` tags pointing to it become dangling references — the VSCode extension flags them and `coderef check` exits 1.
 
 **Can two anchors share the same UUID?**
-The pre-commit hook warns on duplicates (stderr). The last occurrence wins in `.refs`. Avoid duplicates by always generating UUIDs with the VSCode command or a random generator.
+The pre-commit hook warns on duplicates (stderr). The last occurrence wins in `.coderef`. Avoid duplicates by always generating UUIDs with the VSCode command or a random generator.
 
 **Does this work without VSCode?**
 Yes. The hook and CLI work in any editor. `coderef resolve <uuid>` gives you the file:line from the terminal.

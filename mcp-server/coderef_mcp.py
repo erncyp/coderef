@@ -10,7 +10,7 @@ Configuration
 ─────────────
 Set CODEREF_ROOT to the repository root before starting the server.
 If unset, the server walks up from the current working directory looking
-for a .refs file.
+for a .coderef file.
 
 Claude Desktop  (~/.config/claude/claude_desktop_config.json on Linux,
                   ~/Library/Application Support/Claude/... on macOS)
@@ -55,7 +55,7 @@ REF_MARKER_RE = re.compile(
 )
 TO_REF_RE = re.compile(r'\bto_ref:([a-f0-9]{8})(?![a-f0-9])')
 
-REFS_FILENAME = ".refs"
+REFS_FILENAME = ".coderef"
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 
@@ -111,7 +111,7 @@ def find_root() -> Path:
     except FileNotFoundError:
         pass
 
-    # 3. Walk up from cwd looking for .refs
+    # 3. Walk up from cwd looking for .coderef
     cur = Path.cwd()
     while True:
         if (cur / REFS_FILENAME).exists():
@@ -129,7 +129,7 @@ ROOT = find_root()
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _parse_refs_line(raw: str) -> tuple[str, str, str | None]:
-    """Return (location, kind, name_or_None) for a .refs value string."""
+    """Return (location, kind, name_or_None) for a .coderef value string."""
     parts = raw.rsplit(None, 1)
     name: str | None = None
     location = raw
@@ -215,14 +215,14 @@ def resolve(uuid: str) -> dict:
     """
     refs = load_refs()
     if uuid not in refs:
-        return {"error": f"UUID '{uuid}' not found in .refs", "uuid": uuid}
+        return {"error": f"UUID '{uuid}' not found in .coderef", "uuid": uuid}
     return refs[uuid].as_dict(uuid)
 
 
 @mcp.tool()
 def list_refs() -> list[dict]:
     """
-    List all ref: anchors registered in .refs.
+    List all ref: anchors registered in .coderef.
 
     Returns a list of entries, each with uuid, file, line, kind, and
     optional name. Use read_anchor(uuid) to fetch the source code for
@@ -246,7 +246,7 @@ def read_anchor(uuid: str, context_lines: int = 0) -> dict:
     """
     refs = load_refs()
     if uuid not in refs:
-        return {"error": f"UUID '{uuid}' not found in .refs", "uuid": uuid}
+        return {"error": f"UUID '{uuid}' not found in .coderef", "uuid": uuid}
 
     info = refs[uuid]
     start = info.start_line
@@ -282,7 +282,7 @@ def graph() -> dict:
 
     Each key is a UUID. Each value contains the anchor's location and a
     list of every to_ref: occurrence in the codebase that points to it.
-    Dangling to_ref: UUIDs (no anchor in .refs) are included and flagged.
+    Dangling to_ref: UUIDs (no anchor in .coderef) are included and flagged.
 
     Useful for understanding which parts of the codebase are most
     interconnected and for finding all callers/readers of a given anchor.
@@ -317,8 +317,8 @@ def check() -> dict:
     Audit ref integrity across the codebase.
 
     Returns:
-      dangling  — to_ref: UUIDs with no matching ref: anchor in .refs
-      orphans   — ref: anchors in .refs that no to_ref: points to
+      dangling  — to_ref: UUIDs with no matching ref: anchor in .coderef
+      orphans   — ref: anchors in .coderef that no to_ref: points to
       ok        — True only when both lists are empty
 
     Run this to verify the codebase is in a consistent state, e.g. after

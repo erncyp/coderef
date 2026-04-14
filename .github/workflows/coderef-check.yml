@@ -24,12 +24,12 @@ jobs:
           chmod +x cli/coderef
           echo "$PWD/cli" >> "$GITHUB_PATH"
 
-      - name: Scan anchors and rebuild .refs
+      - name: Scan anchors and rebuild .coderef
         # Re-scan on CI so the check reflects the current commit, not a
-        # possibly-stale checked-in .refs file.
+        # possibly-stale checked-in .coderef file.
         run: coderef scan
 
       - name: Check for dangling to_ref: references
-        # Exits 1 if any to_ref: UUID has no matching ref: anchor in .refs.
+        # Exits 1 if any to_ref: UUID has no matching ref: anchor in .coderef.
         # Add --strict to also fail on orphan anchors (ref: with no to_ref:).
         run: coderef check

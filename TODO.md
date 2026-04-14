@@ -11,7 +11,7 @@
 
 - [x] **`coderef check` in CI** — GitHub Actions workflow at `.github/workflows/coderef-check.yml`
 - [x] **`coderef graph` command** — see above
-- [x] **`coderef scan`** — update `.refs` on demand without a git commit; `--dry-run` shows changes
+- [x] **`coderef scan`** — update `.coderef` on demand without a git commit; `--dry-run` shows changes
 - [x] **`coderef check --strict`** — orphan detection (anchors never referenced by any `to_ref:`)
 - [x] **`coderef resolve --context N`** — show N lines of source around the anchor
 
@@ -24,5 +24,5 @@
 
 ## Git hook
 
-- [x] **Post-checkout / post-merge hook** — update `.refs` after pulls and branch switches
+- [x] **Post-checkout / post-merge hook** — update `.coderef` after pulls and branch switches
 - [x] **Support for chaining existing hooks** — `install.sh` detects and chains rather than replaces

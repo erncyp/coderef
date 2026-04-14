@@ -42,7 +42,7 @@ class RefsManager implements vscode.Disposable {
   activate(context: vscode.ExtensionContext): void {
     this.reload();
 
-    const watcher = vscode.workspace.createFileSystemWatcher("**/.refs");
+    const watcher = vscode.workspace.createFileSystemWatcher("**/.coderef");
     watcher.onDidChange(() => this.reload(), null, context.subscriptions);
     watcher.onDidCreate(() => this.reload(), null, context.subscriptions);
     watcher.onDidDelete(
@@ -79,7 +79,7 @@ class RefsManager implements vscode.Disposable {
         }
       }
     } catch {
-      // .refs unreadable — keep empty map
+      // .coderef unreadable — keep empty map
     }
 
     this.onDidChange.fire();
@@ -103,7 +103,7 @@ class RefsManager implements vscode.Disposable {
 
   findRefsFile(): string | undefined {
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
-      const p = path.join(folder.uri.fsPath, ".refs");
+      const p = path.join(folder.uri.fsPath, ".coderef");
       if (fs.existsSync(p)) return p;
     }
     return undefined;
@@ -216,7 +216,7 @@ class ToRefHoverProvider implements vscode.HoverProvider {
     if (!entry) {
       return new vscode.Hover(
         new vscode.MarkdownString(
-          `**coderef** ⚠️ Dangling reference\n\nUUID \`${uuid}\` has no entry in \`.refs\`.\n\n` +
+          `**coderef** ⚠️ Dangling reference\n\nUUID \`${uuid}\` has no entry in \`.coderef\`.\n\n` +
           `Run the pre-commit hook or \`coderef check\` to audit all references.`
         ),
         wordRange
@@ -305,7 +305,7 @@ class DiagnosticsProvider implements vscode.Disposable {
         const end   = document.positionAt(m.index + m[0].length);
         const d = new vscode.Diagnostic(
           new vscode.Range(start, end),
-          `coderef: dangling reference — '${m[1]}' not found in .refs`,
+          `coderef: dangling reference — '${m[1]}' not found in .coderef`,
           sev
         );
         d.source = "coderef";
@@ -414,7 +414,7 @@ export function activate(context: vscode.ExtensionContext): void {
     )
   );
 
-  // ── Refresh on .refs change ────────────────────────────────────────────────
+  // ── Refresh on .coderef change ────────────────────────────────────────────────
   refs.onDidChange.event(() => {
     hints.updateAll();
     diagnostics.updateAll();
@@ -481,7 +481,7 @@ export function activate(context: vscode.ExtensionContext): void {
       });
 
       await vscode.window.showInformationMessage(
-        `coderef: inserted ${name ? `ref:${uuid}:${name}` : `ref:${uuid}`}  (run git commit to update .refs)`
+        `coderef: inserted ${name ? `ref:${uuid}:${name}` : `ref:${uuid}`}  (run git commit to update .coderef)`
       );
     })
   );
@@ -510,7 +510,7 @@ export function activate(context: vscode.ExtensionContext): void {
       });
 
       const msg = multiLine
-        ? `coderef: inserted range ref:${uuid}  (run git commit to update .refs)`
+        ? `coderef: inserted range ref:${uuid}  (run git commit to update .coderef)`
         : `coderef: inserted ref:${uuid}:start — add ref:${uuid}:end at the block's closing line`;
       await vscode.window.showInformationMessage(msg);
     })

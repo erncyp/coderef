@@ -88,12 +88,12 @@ CHAIN
     fi
 done
 
-# ── Create .refs if missing ───────────────────────────────────────────────────
+# ── Create .coderef if missing ───────────────────────────────────────────────────
 
-REFS_FILE="$REPO_ROOT/.refs"
+REFS_FILE="$REPO_ROOT/.coderef"
 if [[ ! -f "$REFS_FILE" ]]; then
     touch "$REFS_FILE"
-    echo "coderef: created empty .refs at $REFS_FILE"
+    echo "coderef: created empty .coderef at $REFS_FILE"
 fi
 
 echo "coderef: installation complete"

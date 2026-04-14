@@ -25,7 +25,7 @@ REF_MARKER_RE = re.compile(
     r'(?<![a-zA-Z_])ref:([a-f0-9]{8})(?::(start|end|[a-z][a-z0-9-]*))?(?![a-f0-9:])'
 )
 
-REFS_FILENAME = ".refs"
+REFS_FILENAME = ".coderef"
 NO_STAGE = "--no-stage" in sys.argv
 
 

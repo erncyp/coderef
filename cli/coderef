@@ -29,7 +29,7 @@ REF_MARKER_RE = re.compile(
 )
 TO_REF_RE = re.compile(r'\bto_ref:([a-f0-9]{8})(?![a-f0-9])')
 
-REFS_FILENAME = ".refs"
+REFS_FILENAME = ".coderef"
 
 
 # ── Data types ────────────────────────────────────────────────────────────────
