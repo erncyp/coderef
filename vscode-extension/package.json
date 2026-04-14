@@ -1,0 +1,57 @@
+{
+  "name": "coderef",
+  "displayName": "Coderef",
+  "description": "Navigate stable UUID-based in-source code anchors with inline hints, hover, go-to-definition, and dangling-ref diagnostics",
+  "version": "0.1.0",
+  "publisher": "coderef",
+  "license": "MIT",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Other"],
+  "keywords": ["coderef", "uuid", "anchor", "navigation", "cross-reference"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "coderef.insertRef",
+        "title": "Coderef: Insert New ref: Anchor at Cursor"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "coderef.insertRef",
+        "key": "ctrl+shift+u",
+        "mac": "cmd+shift+u",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "Coderef",
+      "properties": {
+        "coderef.showInlineHints": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show resolved file:line as inline hints next to to_ref: references"
+        },
+        "coderef.diagnosticSeverity": {
+          "type": "string",
+          "enum": ["error", "warning", "information", "hint"],
+          "default": "warning",
+          "description": "Severity level for dangling to_ref: references"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc --watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.0.0",
+    "@vscode/vsce": "^2.0.0"
+  }
+}

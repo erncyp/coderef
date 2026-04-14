@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""
+coderef pre-commit hook
+Scans all git-tracked and staged files for `ref:<uuid>` anchors and
+rewrites the .refs file with current file paths and line numbers.
+"""
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+# Matches `ref:XXXXXXXX` but NOT `to_ref:XXXXXXXX`
+# Negative lookbehind ensures the word before `ref:` doesn't end with a letter or `_`
+REF_ANCHOR_RE = re.compile(r'(?<![a-zA-Z_])ref:([a-f0-9]{8})(?![a-f0-9])')
+
+REFS_FILENAME = ".refs"
+
+
+def git(*args, cwd=None):
+    result = subprocess.run(
+        ["git", *args],
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+    )
+    return result.stdout.strip()
+
+
+def main():
+    repo_root = Path(git("rev-parse", "--show-toplevel"))
+    refs_path = repo_root / REFS_FILENAME
+
+    # Collect all files to scan: tracked + staged (added/modified)
+    tracked = git("ls-files", cwd=repo_root).splitlines()
+    staged = git(
+        "diff", "--cached", "--name-only", "--diff-filter=ACM", cwd=repo_root
+    ).splitlines()
+
+    files_to_scan = sorted(set(tracked + staged))
+
+    refs: dict[str, str] = {}  # uuid -> "relpath:line"
+
+    for rel in files_to_scan:
+        if rel == REFS_FILENAME:
+            continue
+        full = repo_root / rel
+        if not full.is_file():
+            continue
+
+        try:
+            text = full.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            for m in REF_ANCHOR_RE.finditer(line):
+                uuid = m.group(1)
+                if uuid in refs:
+                    print(
+                        f"coderef: warning: duplicate ref:{uuid} "
+                        f"(already at {refs[uuid]}, also at {rel}:{lineno})",
+                        file=sys.stderr,
+                    )
+                refs[uuid] = f"{rel}:{lineno}"
+
+    # Write .refs (sorted by UUID for stable diffs)
+    lines = [f"{uuid} {loc}\n" for uuid, loc in sorted(refs.items())]
+    refs_path.write_text("".join(lines), encoding="utf-8")
+
+    # Stage the updated .refs
+    subprocess.run(["git", "add", REFS_FILENAME], cwd=repo_root, check=True)
+
+    count = len(refs)
+    print(f"coderef: .refs updated ({count} anchor{'s' if count != 1 else ''})", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

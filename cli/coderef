@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""
+coderef — CLI for the stable UUID-based in-source reference system
+
+Commands:
+  resolve <uuid>   Print the file:line for a UUID anchor
+  list             List all UUID anchors and their locations
+  check            Report dangling to_ref: references (no matching ref:)
+  install          Install the pre-commit hook into the current git repo
+"""
+import argparse
+import re
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+TO_REF_RE = re.compile(r"\bto_ref:([a-f0-9]{8})(?![a-f0-9])")
+REFS_FILENAME = ".refs"
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def find_repo_root() -> Path | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return Path(result.stdout.strip())
+    except FileNotFoundError:
+        pass
+    # Fallback: walk up looking for .refs
+    cur = Path.cwd()
+    while True:
+        if (cur / REFS_FILENAME).exists():
+            return cur
+        parent = cur.parent
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def load_refs(root: Path) -> dict[str, str]:
+    refs_path = root / REFS_FILENAME
+    if not refs_path.exists():
+        return {}
+    refs: dict[str, str] = {}
+    for line in refs_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            refs[parts[0]] = parts[1]
+    return refs
+
+
+def require_root() -> Path:
+    root = find_repo_root()
+    if root is None:
+        print("error: no git repository or .refs file found", file=sys.stderr)
+        sys.exit(1)
+    return root
+
+
+# ── commands ─────────────────────────────────────────────────────────────────
+
+def cmd_resolve(args) -> None:
+    root = require_root()
+    refs = load_refs(root)
+    uuid = args.uuid.lower().strip()
+    if uuid in refs:
+        print(refs[uuid])
+    else:
+        print(f"error: uuid '{uuid}' not found in .refs", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_list(args) -> None:
+    root = require_root()
+    refs = load_refs(root)
+    if not refs:
+        print("(no refs found)")
+        return
+    for uuid, loc in sorted(refs.items()):
+        print(f"{uuid}  {loc}")
+
+
+def cmd_check(args) -> None:
+    root = require_root()
+    refs = load_refs(root)
+
+    result = subprocess.run(
+        ["git", "ls-files"], capture_output=True, text=True, cwd=root
+    )
+    tracked = result.stdout.splitlines()
+
+    dangling: list[tuple[str, int, str]] = []  # (relpath, lineno, uuid)
+    for rel in tracked:
+        full = root / rel
+        if not full.is_file():
+            continue
+        try:
+            text = full.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            for m in TO_REF_RE.finditer(line):
+                uuid = m.group(1)
+                if uuid not in refs:
+                    dangling.append((rel, lineno, uuid))
+
+    if dangling:
+        for rel, lineno, uuid in dangling:
+            print(f"{rel}:{lineno}: dangling to_ref:{uuid}")
+        sys.exit(1)
+    else:
+        print(f"ok: no dangling refs ({len(refs)} anchor(s) in .refs)")
+
+
+def cmd_install(args) -> None:
+    root = require_root()
+    hooks_dir = root / ".git" / "hooks"
+    if not hooks_dir.is_dir():
+        print("error: .git/hooks directory not found", file=sys.stderr)
+        sys.exit(1)
+
+    # Find the pre-commit hook bundled with this CLI
+    script_dir = Path(__file__).resolve().parent
+    repo_hook = script_dir.parent / "hooks" / "pre-commit"
+    if not repo_hook.exists():
+        print(
+            f"error: hook source not found at {repo_hook}", file=sys.stderr
+        )
+        sys.exit(1)
+
+    dst = hooks_dir / "pre-commit"
+    if dst.exists():
+        backup = dst.with_suffix(".bak")
+        shutil.copy2(dst, backup)
+        print(f"coderef: existing hook backed up to {backup}")
+
+    shutil.copy2(repo_hook, dst)
+    dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    print(f"coderef: hook installed at {dst}")
+
+    refs_path = root / REFS_FILENAME
+    if not refs_path.exists():
+        refs_path.write_text("", encoding="utf-8")
+        print("coderef: created empty .refs")
+
+    print("coderef: installation complete")
+
+
+# ── entry point ───────────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="coderef",
+        description="Stable UUID-based in-source code reference system",
+    )
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
+
+    p_resolve = sub.add_parser("resolve", help="Resolve a UUID to file:line")
+    p_resolve.add_argument("uuid", help="8-char hex UUID")
+    p_resolve.set_defaults(func=cmd_resolve)
+
+    p_list = sub.add_parser("list", help="List all UUID anchors")
+    p_list.set_defaults(func=cmd_list)
+
+    p_check = sub.add_parser("check", help="Report dangling to_ref: references")
+    p_check.set_defaults(func=cmd_check)
+
+    p_install = sub.add_parser("install", help="Install git pre-commit hook")
+    p_install.set_defaults(func=cmd_install)
+
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
