@@ -3,12 +3,15 @@
 coderef — CLI for the stable UUID-based in-source reference system
 
 Commands:
-  resolve <uuid>   Print the file:line for a UUID anchor
+  resolve <uuid>   Resolve a UUID to its location; --context shows source lines
   list             List all UUID anchors and their locations
-  check            Report dangling to_ref: references (no matching ref:)
+  check            Audit refs: dangling to_ref: and orphan ref: anchors
+  scan             Scan source files and rewrite .refs (no git commit needed)
+  graph            Emit the full anchor→reference graph as JSON
   install          Install the pre-commit hook into the current git repo
 """
 import argparse
+import json
 import re
 import shutil
 import stat
@@ -16,11 +19,23 @@ import subprocess
 import sys
 from pathlib import Path
 
-TO_REF_RE = re.compile(r"\bto_ref:([a-f0-9]{8})(?![a-f0-9])")
+# ── Patterns ──────────────────────────────────────────────────────────────────
+
+# Matches  ref:UUID:start  or  ref:UUID:end
+REF_RANGE_RE = re.compile(
+    r'(?<![a-zA-Z_])ref:([a-f0-9]{8}):(start|end)(?![a-zA-Z0-9_])'
+)
+# Matches  ref:UUID  plain point anchors (NOT followed by `:` or more hex)
+REF_POINT_RE = re.compile(
+    r'(?<![a-zA-Z_])ref:([a-f0-9]{8})(?![a-f0-9:])'
+)
+# Matches  to_ref:UUID
+TO_REF_RE = re.compile(r'\bto_ref:([a-f0-9]{8})(?![a-f0-9])')
+
 REFS_FILENAME = ".refs"
 
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+# ── Low-level helpers ─────────────────────────────────────────────────────────
 
 def find_repo_root() -> Path | None:
     try:
@@ -43,7 +58,23 @@ def find_repo_root() -> Path | None:
         cur = parent
 
 
+def require_root() -> Path:
+    root = find_repo_root()
+    if root is None:
+        print("error: no git repository or .refs file found", file=sys.stderr)
+        sys.exit(1)
+    return root
+
+
+def tracked_files(root: Path) -> list[str]:
+    result = subprocess.run(
+        ["git", "ls-files"], capture_output=True, text=True, cwd=root
+    )
+    return result.stdout.splitlines()
+
+
 def load_refs(root: Path) -> dict[str, str]:
+    """Return {uuid: location_string} from .refs.  location is 'file:line' or 'file:start-end'."""
     refs_path = root / REFS_FILENAME
     if not refs_path.exists():
         return {}
@@ -58,25 +89,167 @@ def load_refs(root: Path) -> dict[str, str]:
     return refs
 
 
-def require_root() -> Path:
-    root = find_repo_root()
-    if root is None:
-        print("error: no git repository or .refs file found", file=sys.stderr)
-        sys.exit(1)
-    return root
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
 
 
-# ── commands ─────────────────────────────────────────────────────────────────
+# ── Scanning helpers (shared by scan, check, graph) ──────────────────────────
+
+def scan_anchors(
+    root: Path,
+    files: list[str] | None = None,
+) -> dict[str, str]:
+    """
+    Scan source files for ref: anchors and return {uuid: 'relpath:line'} for
+    point refs and {uuid: 'relpath:startline-endline'} for range refs.
+
+    Warnings about duplicates and unmatched range pairs are printed to stderr.
+    """
+    if files is None:
+        files = tracked_files(root)
+
+    starts: dict[str, str] = {}
+    ends:   dict[str, str] = {}
+    points: dict[str, str] = {}
+
+    for rel in files:
+        if rel == REFS_FILENAME:
+            continue
+        full = root / rel
+        if not full.is_file():
+            continue
+        text = _read_text(full)
+        if text is None:
+            continue
+
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            loc = f"{rel}:{lineno}"
+
+            for m in REF_RANGE_RE.finditer(line):
+                uuid, kind = m.group(1), m.group(2)
+                bucket = starts if kind == "start" else ends
+                if uuid in bucket:
+                    print(f"coderef: warning: duplicate ref:{uuid}:{kind} at {loc}", file=sys.stderr)
+                bucket[uuid] = loc
+
+            for m in REF_POINT_RE.finditer(line):
+                uuid = m.group(1)
+                if uuid in points:
+                    print(f"coderef: warning: duplicate ref:{uuid} at {loc}", file=sys.stderr)
+                points[uuid] = loc
+
+    refs: dict[str, str] = {}
+
+    for uuid in sorted(set(starts) | set(ends)):
+        if uuid not in starts:
+            print(f"coderef: warning: ref:{uuid}:end has no :start — skipped", file=sys.stderr)
+            continue
+        if uuid not in ends:
+            print(f"coderef: warning: ref:{uuid}:start has no :end — skipped", file=sys.stderr)
+            continue
+        sf, sl = starts[uuid].rsplit(":", 1)
+        ef, el = ends[uuid].rsplit(":", 1)
+        if sf != ef:
+            print(f"coderef: warning: ref:{uuid} :start/{sf} and :end/{ef} in different files — skipped", file=sys.stderr)
+            continue
+        refs[uuid] = f"{sf}:{sl}-{el}"
+
+    for uuid, loc in sorted(points.items()):
+        if uuid in refs:
+            print(f"coderef: warning: ref:{uuid} used as both point and range — skipped point", file=sys.stderr)
+        else:
+            refs[uuid] = loc
+
+    return refs
+
+
+def scan_to_refs(
+    root: Path,
+    files: list[str] | None = None,
+) -> dict[str, list[dict]]:
+    """
+    Scan source files for to_ref: references.
+    Returns {uuid: [{"file": rel, "line": n}, ...]}
+    """
+    if files is None:
+        files = tracked_files(root)
+
+    result: dict[str, list[dict]] = {}
+
+    for rel in files:
+        if rel == REFS_FILENAME:
+            continue
+        full = root / rel
+        if not full.is_file():
+            continue
+        text = _read_text(full)
+        if text is None:
+            continue
+
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            for m in TO_REF_RE.finditer(line):
+                uuid = m.group(1)
+                result.setdefault(uuid, []).append({"file": rel, "line": lineno})
+
+    return result
+
+
+def _location_kind(loc: str) -> str:
+    """Return 'range' if location has a line range (e.g. file:14-28), else 'point'."""
+    suffix = loc.rsplit(":", 1)[-1]
+    return "range" if "-" in suffix else "point"
+
+
+# ── Commands ──────────────────────────────────────────────────────────────────
 
 def cmd_resolve(args) -> None:
     root = require_root()
     refs = load_refs(root)
     uuid = args.uuid.lower().strip()
-    if uuid in refs:
-        print(refs[uuid])
-    else:
+
+    if uuid not in refs:
         print(f"error: uuid '{uuid}' not found in .refs", file=sys.stderr)
         sys.exit(1)
+
+    loc = refs[uuid]
+    print(loc)
+
+    if args.context == 0:
+        return
+
+    # Parse location
+    # Point:  relpath:line
+    # Range:  relpath:startline-endline
+    try:
+        path_part, line_part = loc.rsplit(":", 1)
+        if "-" in line_part:
+            start_line, end_line = (int(x) for x in line_part.split("-", 1))
+        else:
+            start_line = end_line = int(line_part)
+    except ValueError:
+        return  # malformed — silently skip context
+
+    full = root / path_part
+    text = _read_text(full)
+    if text is None:
+        print(f"error: could not read {path_part}", file=sys.stderr)
+        return
+
+    source_lines = text.splitlines()
+    total = len(source_lines)
+
+    ctx = args.context
+    view_start = max(1, start_line - ctx)
+    view_end   = min(total, end_line + ctx)
+    width      = len(str(view_end))
+
+    print()
+    for n in range(view_start, view_end + 1):
+        marker = ">" if start_line <= n <= end_line else " "
+        print(f"  {marker} {str(n).rjust(width)}: {source_lines[n - 1]}")
 
 
 def cmd_list(args) -> None:
@@ -86,39 +259,121 @@ def cmd_list(args) -> None:
         print("(no refs found)")
         return
     for uuid, loc in sorted(refs.items()):
-        print(f"{uuid}  {loc}")
+        kind = "range" if _location_kind(loc) == "range" else "point"
+        print(f"{uuid}  {loc}  [{kind}]")
 
 
 def cmd_check(args) -> None:
     root = require_root()
     refs = load_refs(root)
+    files = tracked_files(root)
+    to_refs = scan_to_refs(root, files)
 
-    result = subprocess.run(
-        ["git", "ls-files"], capture_output=True, text=True, cwd=root
-    )
-    tracked = result.stdout.splitlines()
+    # ── Dangling: to_ref: UUID that isn't in .refs ────────────────────────────
+    dangling: list[tuple[str, int, str]] = []
+    for uuid, occurrences in sorted(to_refs.items()):
+        if uuid not in refs:
+            for occ in occurrences:
+                dangling.append((occ["file"], occ["line"], uuid))
 
-    dangling: list[tuple[str, int, str]] = []  # (relpath, lineno, uuid)
-    for rel in tracked:
-        full = root / rel
-        if not full.is_file():
-            continue
-        try:
-            text = full.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            for m in TO_REF_RE.finditer(line):
-                uuid = m.group(1)
-                if uuid not in refs:
-                    dangling.append((rel, lineno, uuid))
+    # ── Orphans: UUID in .refs that no to_ref: points at ────────────────────
+    referenced = set(to_refs.keys())
+    orphans = [(uuid, loc) for uuid, loc in sorted(refs.items()) if uuid not in referenced]
+
+    ok = True
 
     if dangling:
-        for rel, lineno, uuid in dangling:
-            print(f"{rel}:{lineno}: dangling to_ref:{uuid}")
+        ok = False
+        print("DANGLING to_ref: (UUID has no anchor in .refs)")
+        for rel, lineno, uuid in sorted(dangling):
+            print(f"  {rel}:{lineno}: to_ref:{uuid}")
+
+    if orphans:
+        if dangling:
+            print()
+        label = "ORPHAN ref:" if not args.strict else "ORPHAN ref: (failing due to --strict)"
+        print(f"{label} (anchor exists in .refs but is never referenced)")
+        for uuid, loc in orphans:
+            print(f"  {uuid}  {loc}")
+        if args.strict:
+            ok = False
+
+    if ok and not orphans:
+        ranges = sum(1 for v in refs.values() if _location_kind(v) == "range")
+        pts = len(refs) - ranges
+        parts = []
+        if pts:    parts.append(f"{pts} point{'s' if pts != 1 else ''}")
+        if ranges: parts.append(f"{ranges} range{'s' if ranges != 1 else ''}")
+        print(f"ok: no issues ({', '.join(parts) or '0 anchors'})")
+    elif ok:
+        print(f"\nok: {len(orphans)} orphan(s) — use --strict to fail on orphans")
+
+    if not ok:
         sys.exit(1)
-    else:
-        print(f"ok: no dangling refs ({len(refs)} anchor(s) in .refs)")
+
+
+def cmd_scan(args) -> None:
+    root = require_root()
+    old_refs = load_refs(root)
+    new_refs = scan_anchors(root)
+
+    if args.dry_run:
+        added   = {u: v for u, v in new_refs.items() if u not in old_refs}
+        removed = {u: v for u, v in old_refs.items() if u not in new_refs}
+        changed = {u: v for u, v in new_refs.items() if u in old_refs and old_refs[u] != v}
+        unchanged = len(new_refs) - len(added) - len(changed)
+
+        if added:
+            for u, v in sorted(added.items()):
+                print(f"  + {u}  {v}")
+        if changed:
+            for u, v in sorted(changed.items()):
+                print(f"  ~ {u}  {old_refs[u]}  →  {v}")
+        if removed:
+            for u, v in sorted(removed.items()):
+                print(f"  - {u}  {v}")
+        if not (added or changed or removed):
+            print(".refs is already up to date")
+        else:
+            print(f"\n(dry run — {len(added)} added, {len(changed)} changed, {len(removed)} removed, {unchanged} unchanged)")
+        return
+
+    lines = [f"{uuid} {loc}\n" for uuid, loc in sorted(new_refs.items())]
+    (root / REFS_FILENAME).write_text("".join(lines), encoding="utf-8")
+
+    ranges = sum(1 for v in new_refs.values() if _location_kind(v) == "range")
+    pts = len(new_refs) - ranges
+    parts = []
+    if pts:    parts.append(f"{pts} point{'s' if pts != 1 else ''}")
+    if ranges: parts.append(f"{ranges} range{'s' if ranges != 1 else ''}")
+    print(f"coderef: .refs updated ({', '.join(parts) or '0 anchors'})")
+
+
+def cmd_graph(args) -> None:
+    root = require_root()
+    refs = load_refs(root)
+    files = tracked_files(root)
+    to_refs = scan_to_refs(root, files)
+
+    graph: dict[str, dict] = {}
+    for uuid, loc in sorted(refs.items()):
+        graph[uuid] = {
+            "location": loc,
+            "kind": _location_kind(loc),
+            "referenced_by": to_refs.get(uuid, []),
+        }
+
+    # Also include dangling to_refs so the full picture is visible
+    for uuid, occurrences in sorted(to_refs.items()):
+        if uuid not in graph:
+            graph[uuid] = {
+                "location": None,
+                "kind": None,
+                "referenced_by": occurrences,
+                "dangling": True,
+            }
+
+    print(json.dumps(graph, indent=2))
 
 
 def cmd_install(args) -> None:
@@ -128,13 +383,10 @@ def cmd_install(args) -> None:
         print("error: .git/hooks directory not found", file=sys.stderr)
         sys.exit(1)
 
-    # Find the pre-commit hook bundled with this CLI
     script_dir = Path(__file__).resolve().parent
     repo_hook = script_dir.parent / "hooks" / "pre-commit"
     if not repo_hook.exists():
-        print(
-            f"error: hook source not found at {repo_hook}", file=sys.stderr
-        )
+        print(f"error: hook source not found at {repo_hook}", file=sys.stderr)
         sys.exit(1)
 
     dst = hooks_dir / "pre-commit"
@@ -155,7 +407,7 @@ def cmd_install(args) -> None:
     print("coderef: installation complete")
 
 
-# ── entry point ───────────────────────────────────────────────────────────────
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -164,18 +416,51 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    p_resolve = sub.add_parser("resolve", help="Resolve a UUID to file:line")
-    p_resolve.add_argument("uuid", help="8-char hex UUID")
-    p_resolve.set_defaults(func=cmd_resolve)
+    # resolve
+    p = sub.add_parser("resolve", help="Resolve a UUID to its file:line location")
+    p.add_argument("uuid", help="8-char hex UUID")
+    p.add_argument(
+        "--context", "-C", metavar="N", type=int, default=0,
+        help="Show N lines of source context around the anchor (default: 0)",
+    )
+    p.set_defaults(func=cmd_resolve)
 
-    p_list = sub.add_parser("list", help="List all UUID anchors")
-    p_list.set_defaults(func=cmd_list)
+    # list
+    p = sub.add_parser("list", help="List all UUID anchors and their locations")
+    p.set_defaults(func=cmd_list)
 
-    p_check = sub.add_parser("check", help="Report dangling to_ref: references")
-    p_check.set_defaults(func=cmd_check)
+    # check
+    p = sub.add_parser(
+        "check",
+        help="Audit refs: report dangling to_ref: and orphan ref: anchors",
+    )
+    p.add_argument(
+        "--strict", action="store_true",
+        help="Exit 1 on orphan anchors as well as dangling refs",
+    )
+    p.set_defaults(func=cmd_check)
 
-    p_install = sub.add_parser("install", help="Install git pre-commit hook")
-    p_install.set_defaults(func=cmd_install)
+    # scan
+    p = sub.add_parser(
+        "scan",
+        help="Scan source files and rewrite .refs (no git commit required)",
+    )
+    p.add_argument(
+        "--dry-run", "-n", action="store_true",
+        help="Show what would change without writing .refs",
+    )
+    p.set_defaults(func=cmd_scan)
+
+    # graph
+    p = sub.add_parser(
+        "graph",
+        help="Emit the full anchor→reference graph as JSON",
+    )
+    p.set_defaults(func=cmd_graph)
+
+    # install
+    p = sub.add_parser("install", help="Install the git pre-commit hook")
+    p.set_defaults(func=cmd_install)
 
     args = parser.parse_args()
     if not args.command:

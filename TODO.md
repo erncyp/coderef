@@ -3,14 +3,17 @@
 ## AI / MCP integration
 
 - [ ] **MCP server** — expose `resolve`, `list`, and `graph` as MCP tool calls so AI assistants can navigate refs natively during a session
-- [ ] **`coderef graph` command** — emit the full `to_ref → ref` relationship as JSON for AI tooling and static analysis
+- [x] **`coderef graph` command** — emit the full `to_ref → ref` relationship as JSON for AI tooling and static analysis
 - [ ] **Named refs** — support `ref:a3f9c821:rate-limiter` syntax so AI (and humans) get semantic meaning without reading the target file
 - [x] **Range refs** — mark a block with a start/end UUID pair (e.g. `ref:a3f9c821:start` / `ref:a3f9c821:end`) so an AI receives a whole logical unit, not just a line
 
 ## CLI
 
 - [ ] **`coderef check` in CI** — document and example GitHub Actions workflow
-- [ ] **`coderef graph` command** — see above
+- [x] **`coderef graph` command** — see above
+- [x] **`coderef scan`** — update `.refs` on demand without a git commit; `--dry-run` shows changes
+- [x] **`coderef check --strict`** — orphan detection (anchors never referenced by any `to_ref:`)
+- [x] **`coderef resolve --context N`** — show N lines of source around the anchor
 
 ## VSCode extension
 
