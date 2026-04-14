@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
 """
 coderef pre-commit hook
-Scans all git-tracked and staged files for `ref:<uuid>` anchors and
-rewrites the .refs file with current file paths and line numbers.
+Scans all git-tracked and staged files for ref anchors and rewrites
+the .refs file with current file paths and line numbers.
+
+Supported anchor syntax:
+  ref:XXXXXXXX           — point anchor  →  stored as  file:line
+  ref:XXXXXXXX:start     — range start   ⎤  stored as  file:startline-endline
+  ref:XXXXXXXX:end       — range end     ⎦
 """
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-# Matches `ref:XXXXXXXX` but NOT `to_ref:XXXXXXXX`
-# Negative lookbehind ensures the word before `ref:` doesn't end with a letter or `_`
-REF_ANCHOR_RE = re.compile(r'(?<![a-zA-Z_])ref:([a-f0-9]{8})(?![a-f0-9])')
+# Matches `ref:UUID:start` or `ref:UUID:end`  (range markers)
+REF_RANGE_RE = re.compile(
+    r'(?<![a-zA-Z_])ref:([a-f0-9]{8}):(start|end)(?![a-zA-Z0-9_])'
+)
+# Matches `ref:UUID` plain point anchors — NOT followed by `:` or more hex digits
+REF_POINT_RE = re.compile(
+    r'(?<![a-zA-Z_])ref:([a-f0-9]{8})(?![a-f0-9:])'
+)
 
 REFS_FILENAME = ".refs"
 
@@ -38,7 +48,10 @@ def main():
 
     files_to_scan = sorted(set(tracked + staged))
 
-    refs: dict[str, str] = {}  # uuid -> "relpath:line"
+    # uuid -> "relpath:line"
+    starts: dict[str, str] = {}
+    ends:   dict[str, str] = {}
+    points: dict[str, str] = {}
 
     for rel in files_to_scan:
         if rel == REFS_FILENAME:
@@ -53,15 +66,67 @@ def main():
             continue
 
         for lineno, line in enumerate(text.splitlines(), start=1):
-            for m in REF_ANCHOR_RE.finditer(line):
-                uuid = m.group(1)
-                if uuid in refs:
+            loc = f"{rel}:{lineno}"
+
+            # Range markers
+            for m in REF_RANGE_RE.finditer(line):
+                uuid, kind = m.group(1), m.group(2)
+                bucket = starts if kind == "start" else ends
+                if uuid in bucket:
                     print(
-                        f"coderef: warning: duplicate ref:{uuid} "
-                        f"(already at {refs[uuid]}, also at {rel}:{lineno})",
+                        f"coderef: warning: duplicate ref:{uuid}:{kind} "
+                        f"(already at {bucket[uuid]}, also at {loc})",
                         file=sys.stderr,
                     )
-                refs[uuid] = f"{rel}:{lineno}"
+                bucket[uuid] = loc
+
+            # Point anchors (the `:` in the lookahead prevents matching range lines)
+            for m in REF_POINT_RE.finditer(line):
+                uuid = m.group(1)
+                if uuid in points:
+                    print(
+                        f"coderef: warning: duplicate ref:{uuid} "
+                        f"(already at {points[uuid]}, also at {loc})",
+                        file=sys.stderr,
+                    )
+                points[uuid] = loc
+
+    # ── Build final refs map ───────────────────────────────────────────────────
+    refs: dict[str, str] = {}
+
+    # Merge range start+end pairs
+    for uuid in sorted(set(starts) | set(ends)):
+        if uuid not in starts:
+            print(f"coderef: warning: ref:{uuid}:end has no matching :start — skipped", file=sys.stderr)
+            continue
+        if uuid not in ends:
+            print(f"coderef: warning: ref:{uuid}:start has no matching :end — skipped", file=sys.stderr)
+            continue
+
+        # Both markers must be in the same file
+        start_loc, end_loc = starts[uuid], ends[uuid]
+        start_file, start_line = start_loc.rsplit(":", 1)
+        end_file,   end_line   = end_loc.rsplit(":", 1)
+
+        if start_file != end_file:
+            print(
+                f"coderef: warning: ref:{uuid} :start and :end are in different files "
+                f"({start_file} vs {end_file}) — skipped",
+                file=sys.stderr,
+            )
+            continue
+
+        refs[uuid] = f"{start_file}:{start_line}-{end_line}"
+
+    # Add point anchors (warn if UUID already claimed by a range)
+    for uuid, loc in sorted(points.items()):
+        if uuid in refs:
+            print(
+                f"coderef: warning: ref:{uuid} used as both a point anchor and a range — skipped point",
+                file=sys.stderr,
+            )
+        else:
+            refs[uuid] = loc
 
     # Write .refs (sorted by UUID for stable diffs)
     lines = [f"{uuid} {loc}\n" for uuid, loc in sorted(refs.items())]
@@ -70,8 +135,12 @@ def main():
     # Stage the updated .refs
     subprocess.run(["git", "add", REFS_FILENAME], cwd=repo_root, check=True)
 
-    count = len(refs)
-    print(f"coderef: .refs updated ({count} anchor{'s' if count != 1 else ''})", file=sys.stderr)
+    ranges = sum(1 for v in refs.values() if "-" in v.split(":")[-1])
+    pts    = len(refs) - ranges
+    parts  = []
+    if pts:    parts.append(f"{pts} point{'s' if pts != 1 else ''}")
+    if ranges: parts.append(f"{ranges} range{'s' if ranges != 1 else ''}")
+    print(f"coderef: .refs updated ({', '.join(parts) or '0 anchors'})", file=sys.stderr)
 
 
 if __name__ == "__main__":

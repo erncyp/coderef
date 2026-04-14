@@ -16,8 +16,17 @@ const TO_REF_RE = /\bto_ref:([a-f0-9]{8})(?![a-f0-9])/g;
 interface RefEntry {
   /** Relative path from workspace root */
   relPath: string;
-  /** 1-indexed line number */
+  /** 1-indexed start line */
   line: number;
+  /** 1-indexed end line — present only for range refs */
+  endLine?: number;
+}
+
+/** Human-readable location string, e.g. `src/foo.py:14` or `src/foo.py:14-28` */
+function entryLocation(entry: RefEntry): string {
+  return entry.endLine
+    ? `${entry.relPath}:${entry.line}-${entry.endLine}`
+    : `${entry.relPath}:${entry.line}`;
 }
 
 // ── RefsManager ───────────────────────────────────────────────────────────────
@@ -64,10 +73,15 @@ class RefsManager implements vscode.Disposable {
       for (const raw of text.split("\n")) {
         const line = raw.trim();
         if (!line || line.startsWith("#")) continue;
-        // Format:  <8-hex>  <relpath>:<lineno>
-        const m = line.match(/^([a-f0-9]{8})\s+(.+):(\d+)$/);
+        // Point ref:  <8-hex>  <relpath>:<line>
+        // Range ref:  <8-hex>  <relpath>:<startline>-<endline>
+        const m = line.match(/^([a-f0-9]{8})\s+(.+):(\d+)(?:-(\d+))?$/);
         if (m) {
-          this.map.set(m[1], { relPath: m[2], line: parseInt(m[3], 10) });
+          this.map.set(m[1], {
+            relPath: m[2],
+            line: parseInt(m[3], 10),
+            endLine: m[4] ? parseInt(m[4], 10) : undefined,
+          });
         }
       }
     } catch {
@@ -150,7 +164,7 @@ class InlineHintProvider implements vscode.Disposable {
     while ((m = TO_REF_RE.exec(text)) !== null) {
       const uuid = m[1];
       const entry = this.refs.resolve(uuid);
-      const label = entry ? `→ ${entry.relPath}:${entry.line}` : `→ (unresolved)`;
+      const label = entry ? `→ ${entryLocation(entry)}` : `→ (unresolved)`;
 
       const start = editor.document.positionAt(m.index);
       const end = editor.document.positionAt(m.index + m[0].length);
@@ -200,7 +214,7 @@ class ToRefLinkProvider implements vscode.DocumentLinkProvider {
       // VSCode interprets `L<n>` fragment as a line number (1-indexed)
       const target = uri.with({ fragment: `L${entry.line}` });
       const link = new vscode.DocumentLink(range, target);
-      link.tooltip = `coderef: go to ${entry.relPath}:${entry.line}`;
+      link.tooltip = `coderef: go to ${entryLocation(entry)}`;
       links.push(link);
     }
 
@@ -240,14 +254,16 @@ class ToRefHoverProvider implements vscode.HoverProvider {
     md.isTrusted = true;
     md.appendMarkdown(`**coderef** \`${uuid}\`\n\n`);
 
+    const loc = entryLocation(entry);
     if (uri) {
       const target = uri.with({ fragment: `L${entry.line}` });
+      const kind = entry.endLine ? " *(range)*" : "";
       md.appendMarkdown(
-        `📍 [\`${entry.relPath}:${entry.line}\`](${target})\n\n` +
+        `📍 [\`${loc}\`](${target})${kind}\n\n` +
           `[Open file](${target})`
       );
     } else {
-      md.appendMarkdown(`📍 \`${entry.relPath}:${entry.line}\``);
+      md.appendMarkdown(`📍 \`${loc}\``);
     }
 
     return new vscode.Hover(md, wordRange);
@@ -276,8 +292,13 @@ class ToRefDefinitionProvider implements vscode.DefinitionProvider {
     const uri = this.refs.resolveUri(uuid);
     if (!uri) return undefined;
 
-    // Position is 0-indexed in VSCode
-    return new vscode.Location(uri, new vscode.Position(entry.line - 1, 0));
+    // For ranges, return a Location spanning the full block so the editor
+    // highlights the selected region when navigating via F12.
+    const startPos = new vscode.Position(entry.line - 1, 0);
+    const endPos = entry.endLine
+      ? new vscode.Position(entry.endLine - 1, Number.MAX_SAFE_INTEGER)
+      : startPos;
+    return new vscode.Location(uri, new vscode.Range(startPos, endPos));
   }
 }
 
@@ -472,6 +493,40 @@ export function activate(context: vscode.ExtensionContext): void {
       await vscode.window.showInformationMessage(
         `coderef: inserted ref:${uuid}  (run git commit to update .refs)`
       );
+    })
+  );
+
+  // ── Insert range-ref command ───────────────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand("coderef.insertRangeRef", async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+
+      const uuid = randomBytes(4).toString("hex");
+      const prefix = commentPrefix(editor.document.languageId);
+
+      // If the selection spans multiple lines, wrap the first and last lines.
+      // Otherwise just insert :start on the current line (user places :end).
+      const sel = editor.selection;
+      const multiLine = sel.end.line > sel.start.line;
+
+      await editor.edit((eb) => {
+        if (multiLine) {
+          const startLineEnd = editor.document.lineAt(sel.start.line).range.end;
+          const endLineEnd   = editor.document.lineAt(sel.end.line).range.end;
+          // Insert :end first so that inserting :start doesn't shift the end offset
+          eb.insert(endLineEnd,   `  ${prefix} ref:${uuid}:end`);
+          eb.insert(startLineEnd, `  ${prefix} ref:${uuid}:start`);
+        } else {
+          const lineEnd = editor.document.lineAt(sel.active.line).range.end;
+          eb.insert(lineEnd, `  ${prefix} ref:${uuid}:start`);
+        }
+      });
+
+      const msg = multiLine
+        ? `coderef: inserted range ref:${uuid}  (run git commit to update .refs)`
+        : `coderef: inserted ref:${uuid}:start — add ref:${uuid}:end at the block's closing line`;
+      await vscode.window.showInformationMessage(msg);
     })
   );
 

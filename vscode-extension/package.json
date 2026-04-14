@@ -15,6 +15,10 @@
       {
         "command": "coderef.insertRef",
         "title": "Coderef: Insert New ref: Anchor at Cursor"
+      },
+      {
+        "command": "coderef.insertRangeRef",
+        "title": "Coderef: Insert Range ref: Anchor (start/end)"
       }
     ],
     "keybindings": [
@@ -22,6 +26,12 @@
         "command": "coderef.insertRef",
         "key": "ctrl+shift+u",
         "mac": "cmd+shift+u",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "coderef.insertRangeRef",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
         "when": "editorTextFocus"
       }
     ],
