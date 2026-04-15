@@ -16,7 +16,16 @@
 - [x] **`coderef check --strict`** — orphan detection (anchors never referenced by any `to_ref:`)
 - [x] **`coderef resolve --context N`** — show N lines of source around the anchor
 
-## Web traversal (GitHub / GitLab)
+## Cross-repo references
+
+Ideas for `to_ref:` references that point into a *different* repository:
+
+- [ ] **Design the syntax** — `/` in a source name is unambiguous from UUIDs and the `@` sigil, so `to_ref:myorg/other-repo:uuid` and `to_ref:@abc1234:myorg/other-repo:uuid` are natural candidates; needs validation against real use cases (microservices, lib → app, docs → code)
+- [ ] **Sources block in `.coderef`** — a `source <name> <url>` header section declares remote repos; `coderef fetch` pulls their `.coderef` files and caches the entries locally; analogous to `package.json` + `npm install`
+- [ ] **Lock file (`.coderef.lock`)** — `coderef fetch` writes a lock file that pins the exact commit SHA and inlines the resolved remote entries; committed to the repo so CI and teammates don't need network access; `coderef fetch --update` refreshes it; analogous to `package-lock.json`
+- [ ] **Simple inline fallback** — before building fetching infrastructure, remote entries can be copied manually into `.coderef` with a URL as the location (e.g. `b7d2e104 https://github.com/org/repo/blob/abc1234/src/api.py#L42`); the VSCode extension and CLI open the URL on navigate
+
+
 
 Ideas for navigating `ref:` / `to_ref:` anchors while browsing code on the web:
 
