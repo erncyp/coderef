@@ -15,6 +15,8 @@
 - [x] **`coderef scan`** — update `.coderef` on demand without a git commit; `--dry-run` shows changes
 - [x] **`coderef check --strict`** — orphan detection (anchors never referenced by any `to_ref:`)
 - [x] **`coderef resolve --context N`** — show N lines of source around the anchor
+- [x] **pre-commit framework plugin** — `.pre-commit-hooks.yaml` + `pyproject.toml` expose `coderef-scan` and `coderef-check` hooks; install with `pip install .` or via pre-commit's `language: python`
+- [x] **Range validation errors** — mismatched `:start`/`:end` pairs and cross-file ranges now exit 1 in both the git hook and `coderef scan`/`coderef check`; duplicate UUIDs remain warnings
 
 ## Cross-repo references
 

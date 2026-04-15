@@ -139,7 +139,7 @@ def tracked_files(root: Path) -> list[str]:
 
 def _parse_refs_line(raw: str) -> tuple[str, str, str | None]:
     """
-    Parse a .refs line value (everything after the UUID).
+    Parse a .coderef line value (everything after the UUID).
     Returns (location, kind, name_or_None).
 
     Formats:
@@ -188,10 +188,20 @@ def _read_text(path: Path) -> str | None:
 
 # ── Scanning helpers (shared by scan, check, graph) ──────────────────────────
 
-def scan_anchors(root: Path, files: list[str] | None = None) -> dict[str, RefInfo]:
+def scan_anchors(
+    root: Path, files: list[str] | None = None
+) -> tuple[dict[str, RefInfo], list[str]]:
     """
     Scan source files for ref: anchors.
-    Returns {uuid: RefInfo} with location, kind, and optional name.
+
+    Returns ``(refs, errors)`` where:
+    - ``refs``   — {uuid: RefInfo} for every valid anchor found
+    - ``errors`` — list of range-validation error strings (mismatched
+                   :start/:end pairs, cross-file ranges).  Non-empty means
+                   one or more UUIDs were skipped and won't appear in refs.
+
+    Duplicate-UUID warnings are still printed to stderr (they're warnings,
+    not hard errors — the last occurrence wins).
     """
     if files is None:
         files = tracked_files(root)
@@ -217,31 +227,37 @@ def scan_anchors(root: Path, files: list[str] | None = None) -> dict[str, RefInf
 
                 if suffix == "start":
                     if uuid in starts:
-                        print(f"coderef: warning: duplicate ref:{uuid}:start at {loc}", file=sys.stderr)
+                        print(f"coderef: warning: duplicate ref:{uuid}:start at {loc} "
+                              f"(previous: {starts[uuid]})", file=sys.stderr)
                     starts[uuid] = loc
                 elif suffix == "end":
                     if uuid in ends:
-                        print(f"coderef: warning: duplicate ref:{uuid}:end at {loc}", file=sys.stderr)
+                        print(f"coderef: warning: duplicate ref:{uuid}:end at {loc} "
+                              f"(previous: {ends[uuid]})", file=sys.stderr)
                     ends[uuid] = loc
                 else:
                     if uuid in points:
-                        print(f"coderef: warning: duplicate ref:{uuid} at {loc}", file=sys.stderr)
+                        print(f"coderef: warning: duplicate ref:{uuid} at {loc} "
+                              f"(previous: {points[uuid][0]})", file=sys.stderr)
                     points[uuid] = (loc, suffix)  # suffix is name or None
 
     result: dict[str, RefInfo] = {}
+    errors: list[str] = []
 
     for uuid in sorted(set(starts) | set(ends)):
         if uuid not in starts:
-            print(f"coderef: warning: ref:{uuid}:end has no :start — skipped", file=sys.stderr)
+            errors.append(f"ref:{uuid}:end at {ends[uuid]} has no matching :start")
             continue
         if uuid not in ends:
-            print(f"coderef: warning: ref:{uuid}:start has no :end — skipped", file=sys.stderr)
+            errors.append(f"ref:{uuid}:start at {starts[uuid]} has no matching :end")
             continue
         sf, sl = starts[uuid].rsplit(":", 1)
         ef, el = ends[uuid].rsplit(":", 1)
         if sf != ef:
-            print(f"coderef: warning: ref:{uuid} :start/{sf} and :end/{ef} in different files — skipped",
-                  file=sys.stderr)
+            errors.append(
+                f"ref:{uuid} range crosses files — "
+                f":start at {starts[uuid]}, :end at {ends[uuid]}"
+            )
             continue
         result[uuid] = RefInfo(location=f"{sf}:{sl}-{el}", kind="range")
 
@@ -252,7 +268,7 @@ def scan_anchors(root: Path, files: list[str] | None = None) -> dict[str, RefInf
         else:
             result[uuid] = RefInfo(location=loc, kind="point", name=name)
 
-    return result
+    return result, errors
 
 
 def scan_to_refs(root: Path, files: list[str] | None = None) -> dict[str, list[dict]]:
@@ -354,6 +370,9 @@ def cmd_check(args) -> None:
     files = tracked_files(root)
     to_refs = scan_to_refs(root, files)
 
+    # Re-scan source to surface any range mismatches not yet caught by scan/hook
+    _, range_errors = scan_anchors(root, files)
+
     # Dangling: UUID not in .coderef and no commit pin (expected to be current)
     dangling: list[tuple[str, int, str]] = []
     # Historical: UUID not in .coderef but pinned to a specific commit (intentional)
@@ -375,8 +394,16 @@ def cmd_check(args) -> None:
 
     ok = True
 
+    if range_errors:
+        ok = False
+        print("INVALID RANGES (ref:uuid:start / :end mismatch or cross-file)")
+        for e in range_errors:
+            print(f"  error: {e}")
+
     if dangling:
         ok = False
+        if range_errors:
+            print()
         print("DANGLING to_ref: (UUID has no anchor in .coderef)")
         for rel, lineno, uuid in sorted(dangling):
             print(f"  {rel}:{lineno}: to_ref:{uuid}")
@@ -414,6 +441,7 @@ def cmd_check(args) -> None:
     elif ok:
         hist_suffix = f", {len(historical)} historical" if historical else ""
         print(f"\nok: {len(orphans)} orphan(s){hist_suffix} — use --strict to fail on orphans")
+    # (range_errors already set ok=False and were printed above)
 
     if not ok:
         sys.exit(1)
@@ -422,7 +450,14 @@ def cmd_check(args) -> None:
 def cmd_scan(args) -> None:
     root = require_root()
     old_refs = load_refs(root)
-    new_refs = scan_anchors(root)
+    new_refs, errors = scan_anchors(root)
+
+    if errors:
+        print("INVALID RANGES (commit blocked until fixed)")
+        for e in errors:
+            print(f"  error: {e}")
+        if not args.dry_run:
+            sys.exit(1)
 
     if args.dry_run:
         added   = {u: v for u, v in new_refs.items() if u not in old_refs}
@@ -542,9 +577,9 @@ def main() -> None:
 
     # scan
     p = sub.add_parser("scan",
-                       help="Scan source files and rewrite .refs (no git commit required)")
+                       help="Scan source files and rewrite .coderef (no git commit required)")
     p.add_argument("--dry-run", "-n", action="store_true",
-                   help="Show what would change without writing .refs")
+                   help="Show what would change without writing .coderef")
     p.set_defaults(func=cmd_scan)
 
     # graph

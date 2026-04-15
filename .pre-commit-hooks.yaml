@@ -1,0 +1,35 @@
+# coderef pre-commit framework hooks
+#
+# Add to your project's .pre-commit-config.yaml:
+#
+#   repos:
+#     - repo: https://github.com/erncyp/coderef
+#       rev: v0.1.0          # replace with the desired tag or SHA
+#       hooks:
+#         - id: coderef-scan   # rebuild .coderef (skip if you use the git hook)
+#         - id: coderef-check  # fail on dangling refs and range mismatches
+
+- id: coderef-scan
+  name: "coderef: rebuild .coderef"
+  description: >
+    Scan all tracked source files, validate ref: ranges, and rebuild .coderef.
+    Exits 1 if any ref:uuid:start / ref:uuid:end pairs are mismatched or
+    cross file boundaries.  Run this before coderef-check if you are not
+    using the coderef git hook.
+  entry: coderef
+  args: [scan]
+  language: python
+  pass_filenames: false
+  always_run: true
+
+- id: coderef-check
+  name: "coderef: check ref integrity"
+  description: >
+    Fail if any to_ref: references are dangling (UUID absent from .coderef
+    and not commit-pinned with @).  Also reports range mismatches and orphan
+    anchors.  Add --strict to fail on orphan anchors too.
+  entry: coderef
+  args: [check]
+  language: python
+  pass_filenames: false
+  always_run: true

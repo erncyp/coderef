@@ -1,0 +1,18 @@
+[build-system]
+requires      = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name            = "coderef"
+version         = "0.1.0"
+description     = "Stable UUID-based in-source code references"
+requires-python = ">=3.9"
+license         = { text = "MIT" }
+readme          = "README.md"
+
+# coderef_entry.py is the thin wrapper that loads cli/coderef by path.
+[project.scripts]
+coderef = "coderef_entry:main"
+
+[tool.setuptools]
+py-modules = ["coderef_entry"]
