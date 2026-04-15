@@ -6,7 +6,7 @@
 - [x] **`coderef graph` command** — emit the full `to_ref → ref` relationship as JSON for AI tooling and static analysis
 - [x] **Named refs** — support `ref:a3f9c821:rate-limiter` syntax so AI (and humans) get semantic meaning without reading the target file
 - [x] **Range refs** — mark a block with a start/end UUID pair (e.g. `ref:a3f9c821:start` / `ref:a3f9c821:end`) so an AI receives a whole logical unit, not just a line
-- [x] **Commit-pinned `to_ref:`** — extended syntax `to_ref:<commit>:<optional-name>:<uuid>` lets authors cite code at a specific point in history without breaking CI; `coderef check` distinguishes dangling errors from intentional historical references
+- [x] **Commit-pinned `to_ref:`** — extended syntax `to_ref:@<commit>:<optional-name>:<uuid>` (the `@` sigil unambiguously marks a commit) lets authors cite code at a specific point in history without breaking CI; `coderef check` distinguishes dangling errors from intentional historical references
 
 ## CLI
 
@@ -36,3 +36,8 @@ Ideas for navigating `ref:` / `to_ref:` anchors while browsing code on the web:
 
 - [x] **Post-checkout / post-merge hook** — update `.coderef` after pulls and branch switches
 - [x] **Support for chaining existing hooks** — `install.sh` detects and chains rather than replaces
+
+## Performance
+
+- [ ] **Incremental scan** — on pre-commit, only rescan files changed in the current commit (`git diff --cached --name-only`) instead of all tracked files; fall back to full scan if `.coderef` is absent
+- [ ] **Rust rewrite** — replace the Python hook and CLI with a single native binary for near-zero startup latency and parallel file scanning via Rayon; the I/O-bound scan would benefit most in large monorepos (10k+ files); the Python implementation is the right starting point — profile before porting

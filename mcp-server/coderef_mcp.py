@@ -53,48 +53,34 @@ from mcp.server.fastmcp import FastMCP
 REF_MARKER_RE = re.compile(
     r'(?<![a-zA-Z_])ref:([a-f0-9]{8})(?::(start|end|[a-z][a-z0-9-]*))?(?![a-f0-9:])'
 )
-TO_REF_RE = re.compile(r'\bto_ref:((?:[-A-Za-z0-9._/@]+:)*[a-f0-9]{8})(?![a-f0-9:])')
+TO_REF_RE = re.compile(
+    r'\bto_ref:((?:@[-A-Za-z0-9._/@]+:)?(?:[a-z][a-z0-9-]*:)?[a-f0-9]{8})(?![a-f0-9:])'
+)
 
 REFS_FILENAME = ".coderef"
 
 
 # ── to_ref: body parser ───────────────────────────────────────────────────────
 
-def _is_commit_ref(s: str) -> bool:
-    """Heuristic: decide whether a to_ref: prefix segment is a commit/branch/tag."""
-    if s == "HEAD":
-        return True
-    if re.match(r'^[0-9a-f]+$', s) and len(s) != 8 and 7 <= len(s) <= 40:
-        return True
-    if "/" in s or "." in s:
-        return True
-    if any(c.isupper() for c in s):
-        return True
-    if s and s[0].isdigit():
-        return True
-    return False
-
-
 def _parse_to_ref(body: str) -> dict:
     """
     Parse the body captured after ``to_ref:`` by TO_REF_RE.
 
+    Formats: uuid | @commit:uuid | name:uuid | @commit:name:uuid
     Returns {'uuid': str, 'commit': str|None, 'name': str|None}.
     """
     parts = body.split(":")
-    uuid = parts[-1]
+    uuid  = parts[-1]
     commit: str | None = None
     name:   str | None = None
 
-    if len(parts) == 2:
-        seg = parts[0]
-        if _is_commit_ref(seg):
-            commit = seg
-        else:
-            name = seg
-    elif len(parts) >= 3:
-        commit = parts[0]
-        name   = ":".join(parts[1:-1])
+    rest = parts[:-1]
+    if rest and rest[0].startswith("@"):
+        commit = rest[0][1:]
+        rest   = rest[1:]
+
+    if rest:
+        name = ":".join(rest)
 
     return {"uuid": uuid, "commit": commit, "name": name}
 

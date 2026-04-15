@@ -27,29 +27,20 @@ from pathlib import Path
 REF_MARKER_RE = re.compile(
     r'(?<![a-zA-Z_])ref:([a-f0-9]{8})(?::(start|end|[a-z][a-z0-9-]*))?(?![a-f0-9:])'
 )
-TO_REF_RE = re.compile(r'\bto_ref:((?:[-A-Za-z0-9._/@]+:)*[a-f0-9]{8})(?![a-f0-9:])')
+# Extended to_ref: syntax:
+#   to_ref:uuid                     — HEAD ref, no label
+#   to_ref:@commit:uuid             — pinned to commit, no label
+#   to_ref:name:uuid                — HEAD ref, labelled
+#   to_ref:@commit:name:uuid        — pinned + labelled
+# The @ sigil unambiguously marks a commit; plain segments are labels.
+TO_REF_RE = re.compile(
+    r'\bto_ref:((?:@[-A-Za-z0-9._/@]+:)?(?:[a-z][a-z0-9-]*:)?[a-f0-9]{8})(?![a-f0-9:])'
+)
 
 REFS_FILENAME = ".coderef"
 
 
 # ── to_ref: body parser ───────────────────────────────────────────────────────
-
-def _is_commit_ref(s: str) -> bool:
-    """Heuristic: decide whether a to_ref: prefix segment is a commit/branch/tag."""
-    if s == "HEAD":
-        return True
-    # Short or full SHA: all-hex, length 7–40, but NOT exactly 8 (which looks like a UUID)
-    if re.match(r'^[0-9a-f]+$', s) and len(s) != 8 and 7 <= len(s) <= 40:
-        return True
-    # Typical branch/tag indicators: slash, dot, uppercase letters, or digit-first
-    if "/" in s or "." in s:
-        return True
-    if any(c.isupper() for c in s):
-        return True
-    if s and s[0].isdigit():
-        return True
-    return False
-
 
 def _parse_to_ref(body: str) -> dict:
     """
@@ -58,26 +49,25 @@ def _parse_to_ref(body: str) -> dict:
     Formats
     -------
     uuid                  → HEAD ref, no label
-    commit:uuid           → pinned ref, no label   (commit detected by _is_commit_ref)
-    label:uuid            → HEAD ref, with label   (label doesn't look like a commit)
-    commit:label:uuid     → pinned ref, with label
+    @commit:uuid          → pinned to commit, no label
+    name:uuid             → HEAD ref, with label
+    @commit:name:uuid     → pinned to commit, with label
 
+    The ``@`` sigil is the unambiguous signal for a commit reference.
     Returns {'uuid': str, 'commit': str|None, 'name': str|None}.
     """
     parts = body.split(":")
-    uuid = parts[-1]
+    uuid  = parts[-1]
     commit: str | None = None
     name:   str | None = None
 
-    if len(parts) == 2:
-        seg = parts[0]
-        if _is_commit_ref(seg):
-            commit = seg
-        else:
-            name = seg
-    elif len(parts) >= 3:
-        commit = parts[0]
-        name   = ":".join(parts[1:-1])
+    rest = parts[:-1]
+    if rest and rest[0].startswith("@"):
+        commit = rest[0][1:]   # strip leading @
+        rest   = rest[1:]
+
+    if rest:
+        name = ":".join(rest)
 
     return {"uuid": uuid, "commit": commit, "name": name}
 

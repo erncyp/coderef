@@ -11,28 +11,22 @@ import { randomBytes } from "crypto";
 const REF_MARKER_RE =
   /(?<![a-zA-Z_])ref:([a-f0-9]{8})(?::(start|end|[a-z][a-z0-9-]*))?(?![a-f0-9:])/g;
 
-// Matches to_ref: with optional commit/name prefix segments before the UUID.
-// group(1) = full body, e.g. "a3f9c821", "HEAD:a3f9c821", "abc123:rate-limiter:a3f9c821"
-const TO_REF_RE = /\bto_ref:((?:[-A-Za-z0-9._/@]+:)*[a-f0-9]{8})(?![a-f0-9:])/g;
+// Extended to_ref: syntax (@ sigil marks commits unambiguously):
+//   to_ref:uuid                  — HEAD ref, no label
+//   to_ref:@commit:uuid          — pinned to commit, no label
+//   to_ref:name:uuid             — HEAD ref, labelled
+//   to_ref:@commit:name:uuid     — pinned + labelled
+// group(1) = full body after "to_ref:"
+const TO_REF_RE = /\bto_ref:((?:@[-A-Za-z0-9._/@]+:)?(?:[a-z][a-z0-9-]*:)?[a-f0-9]{8})(?![a-f0-9:])/g;
 
 // ── to_ref: body parser ───────────────────────────────────────────────────────
 
 interface ParsedToRef {
   uuid: string;
-  /** Commit SHA, branch, tag, or "HEAD" — present when the user pinned to a commit. */
+  /** Commit ref (SHA/branch/tag) — present when the body starts with @. */
   commit: string | undefined;
   /** Human-readable label embedded in the to_ref: body, e.g. "rate-limiter". */
   name: string | undefined;
-}
-
-function isCommitRef(s: string): boolean {
-  if (s === "HEAD") return true;
-  // All-hex, length 7–40, but NOT exactly 8 (which looks like a UUID)
-  if (/^[0-9a-f]+$/.test(s) && s.length !== 8 && s.length >= 7 && s.length <= 40) return true;
-  // Slash, dots, uppercase, or digit-first → branch/tag/version
-  if (s.includes("/") || s.includes(".")) return true;
-  if (/[A-Z]/.test(s) || /^\d/.test(s)) return true;
-  return false;
 }
 
 function parseToRef(body: string): ParsedToRef {
@@ -41,13 +35,13 @@ function parseToRef(body: string): ParsedToRef {
   let commit: string | undefined;
   let name:   string | undefined;
 
-  if (parts.length === 2) {
-    const seg = parts[0];
-    if (isCommitRef(seg)) { commit = seg; }
-    else                   { name   = seg; }
-  } else if (parts.length >= 3) {
-    commit = parts[0];
-    name   = parts.slice(1, -1).join(":");
+  let rest = parts.slice(0, -1);
+  if (rest.length > 0 && rest[0].startsWith("@")) {
+    commit = rest[0].slice(1);   // strip leading @
+    rest   = rest.slice(1);
+  }
+  if (rest.length > 0) {
+    name = rest.join(":");
   }
 
   return { uuid, commit, name };
@@ -258,7 +252,7 @@ class ToRefHoverProvider implements vscode.HoverProvider {
   ): vscode.Hover | undefined {
     const wordRange = document.getWordRangeAtPosition(
       position,
-      /\bto_ref:(?:[-A-Za-z0-9._/@]+:)*[a-f0-9]{8}(?![a-f0-9:])/
+      /\bto_ref:(?:@[-A-Za-z0-9._/@]+:)?(?:[a-z][a-z0-9-]*:)?[a-f0-9]{8}(?![a-f0-9:])/
     );
     if (!wordRange) return undefined;
 
@@ -327,7 +321,7 @@ class ToRefDefinitionProvider implements vscode.DefinitionProvider {
   ): vscode.Location | undefined {
     const wordRange = document.getWordRangeAtPosition(
       position,
-      /\bto_ref:(?:[-A-Za-z0-9._/@]+:)*[a-f0-9]{8}(?![a-f0-9:])/
+      /\bto_ref:(?:@[-A-Za-z0-9._/@]+:)?(?:[a-z][a-z0-9-]*:)?[a-f0-9]{8}(?![a-f0-9:])/
     );
     if (!wordRange) return undefined;
 
@@ -415,7 +409,7 @@ class ToRefCompletionProvider implements vscode.CompletionItemProvider {
   ): vscode.CompletionItem[] {
     // Trigger when cursor follows `to_ref:` or `to_ref:<commit>:` or `to_ref:<commit>:<name>:`
     const linePrefix = document.lineAt(position).text.slice(0, position.character);
-    if (!linePrefix.match(/\bto_ref:(?:[-A-Za-z0-9._/@]+:)*$/)) return [];
+    if (!linePrefix.match(/\bto_ref:(?:@[-A-Za-z0-9._/@]+:)?(?:[a-z][a-z0-9-]*:)?$/)) return [];
 
     const items: vscode.CompletionItem[] = [];
 
