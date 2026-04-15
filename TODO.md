@@ -34,7 +34,14 @@ Ideas for navigating `ref:` / `to_ref:` anchors while browsing code on the web:
 - [ ] **Permalink resolver** — a lightweight HTTP redirect service (or GitHub Action artefact) that accepts `coderef://<repo>/<uuid>` and redirects to the exact GitHub permalink (`/blob/<sha>/file#Lline`) by reading `.coderef` at that commit; useful for linking to stable anchors from docs, wikis, and issue trackers
 - [ ] **Static-site / documentation plugin** — a plugin for MkDocs, Docusaurus, or similar that resolves `to_ref:` links in Markdown docs to permanent GitHub permalink URLs at the current commit, so published docs never have stale line-number links
 
-## VSCode extension
+## Vim / Neovim plugin
+
+- [x] **Core plugin** — VimScript plugin (`vim-plugin/`) works in Vim 8+ and Neovim; go-to-definition, preview window, insert anchor, insert range, quickfix check
+- [x] **Neovim virtual text** — Lua module adds `→ file:line` hints, commit-pin badges, and native `vim.diagnostic` warnings for dangling refs on Neovim 0.5+
+- [x] **Lua setup API** — `require('coderef').setup({})` for lazy.nvim / Neovim-native config
+- [ ] **Publish to Vim/Neovim package registries** — submit to vim.org scripts and add to awesome-neovim list
+
+
 
 - [ ] **Publish to Marketplace** — set up publisher, add icon, submit to VS Code Marketplace
 - [x] **Range ref support** — highlight and navigate ref ranges once range refs are implemented

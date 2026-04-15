@@ -1,0 +1,174 @@
+*coderef.txt*  Stable UUID-based code anchor navigation
+
+Author:  erncyp
+License: MIT
+
+==============================================================================
+CONTENTS                                                     *coderef-contents*
+
+    1. Introduction ............ |coderef-intro|
+    2. Installation ............ |coderef-install|
+    3. Commands ................ |coderef-commands|
+    4. Mappings ................ |coderef-mappings|
+    5. Configuration ........... |coderef-config|
+    6. Neovim extras ........... |coderef-neovim|
+
+==============================================================================
+1. INTRODUCTION                                                 *coderef-intro*
+
+coderef embeds stable UUID anchors in source code.  Each `ref:<uuid>` marks a
+location; `to_ref:<uuid>` references it from anywhere.  A git pre-commit hook
+keeps a `.coderef` mapping file up to date with every anchor's current
+`file:line`.
+
+This plugin navigates those anchors from Vim and Neovim.
+
+Syntax reference:~
+
+    ref:a3f9c821                    point anchor
+    ref:a3f9c821:auth-guard         named anchor
+    ref:a3f9c821:start / :end       range anchor pair
+
+    to_ref:a3f9c821                 reference (HEAD)
+    to_ref:@abc1234:a3f9c821        pinned to commit abc1234
+    to_ref:rate-limiter:a3f9c821    labelled reference
+    to_ref:@abc1234:rate-limiter:a3f9c821   pinned + labelled
+
+==============================================================================
+2. INSTALLATION                                               *coderef-install*
+
+The plugin lives in the `vim-plugin/` subdirectory of the coderef repository.
+
+vim-plug:~
+>
+    Plug 'erncyp/coderef', { 'rtp': 'vim-plugin' }
+<
+lazy.nvim:~
+>
+    {
+      'erncyp/coderef',
+      main = 'coderef',       -- calls require('coderef').setup()
+      opts = {},
+      -- or configure via vimscript globals instead:
+      -- init = function() vim.g.coderef_goto_key = 'gd' end,
+    }
+<
+Manual (add to vimrc):~
+>
+    set runtimepath+=/path/to/coderef/vim-plugin
+<
+Requirements:~
+  • Vim 8.1+ or Neovim 0.5+
+  • Python 3 or openssl on PATH (for UUID generation)
+  • `coderef` CLI on PATH (for |:CoDerefCheck|)
+
+==============================================================================
+3. COMMANDS                                                  *coderef-commands*
+
+*:CoDerefGoto*
+    Jump to the anchor that `to_ref:` under the cursor points to.
+    Opens the target file in the current window and centres the view.
+
+*:CoDerefPreview*
+    Open the anchor's file in the |preview-window| (close with CTRL-W z).
+
+*:CoDerefInsert*
+    Append a new `ref:<uuid>` anchor at the end of the current line.
+    Prompts for an optional name.
+
+*:CoDerefInsertRange*
+    Wrap a visual selection with `ref:<uuid>:start` / `ref:<uuid>:end`.
+    Use |CTRL-V| or |v| to select lines first.
+
+*:CoDerefCheck*
+    Run `coderef check` in the repository root.  On success prints a
+    summary.  On failure, loads dangling refs into the |quickfix| list
+    and opens it with |:copen|.
+
+==============================================================================
+4. MAPPINGS                                                  *coderef-mappings*
+
+Default mappings (normal mode unless noted):
+
+    <leader>cg      |:CoDerefGoto|
+    <leader>cp      |:CoDerefPreview|
+    <leader>ci      |:CoDerefInsert|
+    <leader>cr      |:CoDerefInsertRange|  (visual mode)
+
+Disable all defaults:~
+>
+    let g:coderef_no_default_maps = 1
+<
+Override individual keys:~
+>
+    let g:coderef_goto_key   = 'gd'
+    let g:coderef_insert_key = '<leader>ra'
+<
+Set a key to '' to disable it without disabling the others.
+
+==============================================================================
+5. CONFIGURATION                                               *coderef-config*
+
+Set these variables in your vimrc before the plugin loads.
+
+*g:coderef_goto_key*            (default: '<leader>cg')
+    Normal-mode key for |:CoDerefGoto|.
+
+*g:coderef_preview_key*         (default: '<leader>cp')
+    Normal-mode key for |:CoDerefPreview|.
+
+*g:coderef_insert_key*          (default: '<leader>ci')
+    Normal-mode key for |:CoDerefInsert|.
+
+*g:coderef_insert_range_key*    (default: '<leader>cr')
+    Visual-mode key for |:CoDerefInsertRange|.
+
+*g:coderef_no_default_maps*     (default: 0)
+    Set to 1 to suppress all default key mappings.
+
+*g:coderef_show_hints*          (default: 1)
+    Set to 0 to disable virtual-text hints (Neovim only).
+
+==============================================================================
+6. NEOVIM EXTRAS                                               *coderef-neovim*
+
+On Neovim 0.5+, the Lua module `lua/coderef.lua` is loaded automatically and
+provides:
+
+Virtual-text hints~
+    After every `to_ref:<uuid>`, a subtle annotation shows the resolved
+    location:  `→ src/auth.py:14`
+
+    For commit-pinned refs:  `→ [abc1234] src/auth.py:14`
+    For historical refs:     `→ [abc1234] (historical)`
+
+    Hints refresh on BufReadPost, BufWritePost, InsertLeave, and
+    TextChanged.  Disable with |g:coderef_show_hints| = 0.
+
+Native diagnostics~
+    Dangling `to_ref:` references (UUID absent from `.coderef`, no commit
+    pin) are reported as |vim.diagnostic| warnings.  They appear in the
+    sign column and can be navigated with `]d` / `[d`.
+
+    Commit-pinned historical refs are NOT flagged — they are intentional.
+
+Highlight groups~
+    CoDerefHint         virtual text for resolved refs (links to Comment)
+    CoDerefPinned       virtual text for commit-pinned refs (links to Special)
+    CoDerefDangling     dangling ref diagnostic (links to DiagnosticWarn)
+
+    Override in your colorscheme setup:
+>
+        vim.api.nvim_set_hl(0, 'CoDerefHint', { fg = '#888888', italic = true })
+<
+Lua-style setup (optional)~
+    Works with lazy.nvim `opts = {}` or explicit call:
+>
+        require('coderef').setup({
+          show_hints      = true,
+          no_default_maps = false,
+          goto_key        = '<leader>cg',
+        })
+<
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:
