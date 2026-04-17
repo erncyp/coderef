@@ -482,11 +482,22 @@ function runScan(root: string, extensionPath: string): void {
       return;
     }
     const [python, ...rest] = candidates;
-    execFile(python, [bundled, "scan"], { cwd: root }, (err) => {
-      // ENOENT means the python binary wasn't found — try the next candidate.
-      // Any other error (non-zero exit) means the script ran; ignore it.
-      if (err && (err as NodeJS.ErrnoException).code === "ENOENT") {
-        tryNext(rest);
+    execFile(python, [bundled, "scan"], { cwd: root }, (err, stdout, stderr) => {
+      if (!err) return; // success
+
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        tryNext(rest); // python binary not found — try next candidate
+        return;
+      }
+
+      // Script ran but exited non-zero — surface actionable errors only,
+      // filtering out warning: lines (duplicate refs etc.) which are expected.
+      const lines = (stdout + "\n" + stderr).split("\n");
+      const errors = lines.filter(l =>
+        l.startsWith("INVALID RANGES") || l.startsWith("  error:") || l.startsWith("error:")
+      );
+      if (errors.length > 0) {
+        vscode.window.showWarningMessage(`coderef: ${errors.join(" — ")}`);
       }
     });
   }
