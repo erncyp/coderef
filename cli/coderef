@@ -216,7 +216,7 @@ def _read_text(path: Path) -> str | None:
         return None
 
 # ── Scanning helpers (shared by scan, check, graph) ──────────────────────────
-# ref:67baa8d6:asdas
+# ref:7f039eaa:anchor
 
 def scan_anchors(
     root: Path, files: list[str] | None = None
