@@ -546,8 +546,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
       await editor.edit((eb) => {
         for (const sel of editor.selections) {
-          const lineEnd = editor.document.lineAt(sel.active.line).range.end;
-          eb.insert(lineEnd, `  ${anchor}`);
+          const line   = editor.document.lineAt(sel.active.line);
+          const indent = line.text.match(/^(\s*)/)?.[1] ?? "";
+          eb.insert(new vscode.Position(sel.active.line, 0), `${indent}${anchor}\n`);
         }
       });
 
@@ -570,13 +571,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
       await editor.edit((eb) => {
         if (multiLine) {
-          const startLineEnd = editor.document.lineAt(sel.start.line).range.end;
-          const endLineEnd   = editor.document.lineAt(sel.end.line).range.end;
-          eb.insert(endLineEnd,   `  ${prefix} ref:${uuid}:end`);
-          eb.insert(startLineEnd, `  ${prefix} ref:${uuid}:start`);
+          const startIndent = editor.document.lineAt(sel.start.line).text.match(/^(\s*)/)?.[1] ?? "";
+          const endIndent   = editor.document.lineAt(sel.end.line).text.match(/^(\s*)/)?.[1] ?? "";
+          const endLineEnd  = editor.document.lineAt(sel.end.line).range.end;
+          eb.insert(endLineEnd, `\n${endIndent}${prefix} ref:${uuid}:end`);
+          eb.insert(new vscode.Position(sel.start.line, 0), `${startIndent}${prefix} ref:${uuid}:start\n`);
         } else {
-          const lineEnd = editor.document.lineAt(sel.active.line).range.end;
-          eb.insert(lineEnd, `  ${prefix} ref:${uuid}:start`);
+          const line   = editor.document.lineAt(sel.active.line);
+          const indent = line.text.match(/^(\s*)/)?.[1] ?? "";
+          eb.insert(new vscode.Position(sel.active.line, 0), `${indent}${prefix} ref:${uuid}:start\n`);
         }
       });
 

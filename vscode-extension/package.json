@@ -2,7 +2,7 @@
   "name": "coderef",
   "displayName": "Coderef",
   "description": "Navigate stable UUID-based in-source code anchors with inline hints, hover, go-to-definition, and dangling-ref diagnostics",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "coderef",
   "license": "MIT",
   "icon": "icon.png",
@@ -29,13 +29,13 @@
     "keybindings": [
       {
         "command": "coderef.insertRef",
-        "key": "ctrl+shift+u",
+        "key": "ctrl+alt+u",
         "mac": "cmd+shift+u",
         "when": "editorTextFocus"
       },
       {
         "command": "coderef.insertRangeRef",
-        "key": "ctrl+shift+r",
+        "key": "ctrl+alt+r",
         "mac": "cmd+shift+r",
         "when": "editorTextFocus"
       }

@@ -35,9 +35,9 @@ UUIDs are 8-character lowercase hex strings and are language-agnostic — any fi
 
 **Diagnostics** — `to_ref:` tags with no matching UUID in `.coderef` are underlined. Commit-pinned historical refs are suppressed.
 
-**Insert ref** — `Ctrl+Shift+U` (or Command Palette → **Coderef: Insert New ref: Anchor at Cursor**). Prompts for an optional name.
+**Insert ref** — `Ctrl+Alt+U` / `Cmd+Shift+U` (or Command Palette → **Coderef: Insert New ref: Anchor at Cursor**). Prompts for an optional name.
 
-**Insert range ref** — select lines, then press `Ctrl+Shift+R` to wrap the selection with `:start` / `:end`.
+**Insert range ref** — select lines, then press `Ctrl+Alt+R` / `Cmd+Shift+R` to wrap the selection with `:start` / `:end`.
 
 **Autocomplete** — typing `to_ref:` suggests all known UUIDs with their locations and names.
 
