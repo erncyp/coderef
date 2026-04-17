@@ -3,6 +3,7 @@ src/**
 node_modules/**
 .gitignore
 tsconfig.json
+make_icon.py
 **/*.map
 **/*.ts
 !out/**
