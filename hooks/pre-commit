@@ -21,6 +21,7 @@ Options:
 import re
 import subprocess
 import sys
+from fnmatch import fnmatch
 from pathlib import Path
 
 # Single pattern for all ref: marker forms.
@@ -44,9 +45,34 @@ def git(*args, cwd=None):
     return result.stdout.strip()
 
 
+def _load_ignore_patterns(root: Path) -> list[str]:
+    ignore_file = root / ".coderefignore"
+    if not ignore_file.exists():
+        return []
+    patterns = []
+    for line in ignore_file.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            patterns.append(line)
+    return patterns
+
+
+def _is_ignored(rel_path: str, patterns: list[str]) -> bool:
+    p = Path(rel_path)
+    for pattern in patterns:
+        if fnmatch(rel_path, pattern) or fnmatch(p.name, pattern):
+            return True
+        for parent in p.parents:
+            if fnmatch(str(parent) + "/", pattern) or fnmatch(str(parent), pattern):
+                return True
+    return False
+
+
 def main():
     repo_root = Path(git("rev-parse", "--show-toplevel"))
     refs_path = repo_root / REFS_FILENAME
+
+    ignore_patterns = _load_ignore_patterns(repo_root)
 
     # Collect all files to scan: tracked + staged (added/modified)
     tracked = git("ls-files", cwd=repo_root).splitlines()
@@ -54,7 +80,10 @@ def main():
         git("diff", "--cached", "--name-only", "--diff-filter=ACM", cwd=repo_root).splitlines()
         if not NO_STAGE else []
     )
-    files_to_scan = sorted(set(tracked + staged))
+    files_to_scan = sorted(
+        f for f in set(tracked + staged)
+        if not _is_ignored(f, ignore_patterns)
+    )
 
     # uuid -> "relpath:line"
     starts: dict[str, str] = {}

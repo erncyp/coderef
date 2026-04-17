@@ -130,11 +130,41 @@ def require_root() -> Path:
     return root
 
 
+def _load_ignore_patterns(root: Path) -> list[str]:
+    ignore_file = root / ".coderefignore"
+    if not ignore_file.exists():
+        return []
+    patterns = []
+    for line in ignore_file.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            patterns.append(line)
+    return patterns
+
+
+def _is_ignored(rel_path: str, patterns: list[str]) -> bool:
+    from fnmatch import fnmatch
+    p = Path(rel_path)
+    for pattern in patterns:
+        # Match against full path or any parent suffix (e.g. "docs/**" or "*.md")
+        if fnmatch(rel_path, pattern) or fnmatch(p.name, pattern):
+            return True
+        # Match directory prefix: "vim-plugin/doc/" matches "vim-plugin/doc/coderef.txt"
+        for parent in p.parents:
+            if fnmatch(str(parent) + "/", pattern) or fnmatch(str(parent), pattern):
+                return True
+    return False
+
+
 def tracked_files(root: Path) -> list[str]:
     result = subprocess.run(
         ["git", "ls-files"], capture_output=True, text=True, cwd=root
     )
-    return result.stdout.splitlines()
+    files = result.stdout.splitlines()
+    patterns = _load_ignore_patterns(root)
+    if patterns:
+        files = [f for f in files if not _is_ignored(f, patterns)]
+    return files
 
 
 def _parse_refs_line(raw: str) -> tuple[str, str, str | None]:
@@ -186,7 +216,7 @@ def _read_text(path: Path) -> str | None:
         return None
 
 # ── Scanning helpers (shared by scan, check, graph) ──────────────────────────
-# ref:abe37681:scan
+# ref:67baa8d6:asdas
 
 def scan_anchors(
     root: Path, files: list[str] | None = None

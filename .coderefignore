@@ -1,0 +1,7 @@
+# Files containing example ref: UUIDs in documentation — exclude from scanning
+README.md
+TODO.md
+vim-plugin/doc/
+
+# Bundled copy of cli/coderef inside the VS Code extension — would duplicate all CLI refs
+vscode-extension/bin/
