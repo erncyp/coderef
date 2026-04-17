@@ -636,6 +636,46 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
+  // ── Insert to_ref command ─────────────────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand("coderef.insertToRef", async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+
+      const allRefs = Array.from(refs.all());
+      if (allRefs.length === 0) {
+        vscode.window.showInformationMessage("coderef: no refs found in .coderef — insert a ref: anchor first");
+        return;
+      }
+
+      interface RefItem extends vscode.QuickPickItem { uuid: string; entry: RefEntry; }
+      const items: RefItem[] = allRefs.map(([uuid, entry]) => ({
+        label:       entry.name ? `$(references) ${entry.name}` : `$(references) ${uuid}`,
+        description: entry.name ? uuid : undefined,
+        detail:      entryLocation(entry),
+        uuid,
+        entry,
+      }));
+
+      const picked = await vscode.window.showQuickPick(items, {
+        matchOnDescription: true,
+        matchOnDetail:      true,
+        placeHolder:        "Select a ref to insert as to_ref:",
+      });
+      if (!picked) return;
+
+      const toRef = picked.entry.name
+        ? `to_ref:${picked.entry.name}:${picked.uuid}`
+        : `to_ref:${picked.uuid}`;
+
+      await editor.edit((eb) => {
+        for (const sel of editor.selections) {
+          eb.insert(sel.active, toRef);
+        }
+      });
+    })
+  );
+
   hints.updateAll();
   diagnostics.updateAll();
 }

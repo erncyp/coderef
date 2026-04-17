@@ -8,6 +8,7 @@ Stable UUID-based code anchors that survive renames, moves, and refactors. Place
 |---|---|---|
 | `Ctrl+Alt+U` | `Cmd+Shift+U` | Insert `ref:` anchor at cursor |
 | `Ctrl+Alt+R` | `Cmd+Shift+R` | Wrap selection with `ref:start` / `ref:end` |
+| `Ctrl+Alt+J` | `Cmd+Shift+J` | Pick a ref and insert as `to_ref:` at cursor |
 
 Both commands also appear in the Command Palette (`Ctrl+Shift+P`) as **Coderef: Insert New ref: Anchor at Cursor** and **Coderef: Insert Range ref: Anchor (start/end)**.
 
@@ -19,7 +20,7 @@ After inserting, the extension runs `coderef scan` automatically so the new anch
 - **Hover** — file path, line, and clickable link; commit-pinned refs show their commit badge
 - **Go-to-definition** (`F12` / `Ctrl+Click`) — jumps to the ref's line; range refs highlight the block
 - **Diagnostics** — dangling `to_ref:` tags are underlined; commit-pinned historical refs are suppressed
-- **Autocomplete** — typing `to_ref:` suggests all known UUIDs with names and locations
+- **Autocomplete** — `Ctrl+Space` after `to_ref:` suggests all known UUIDs with names and locations (note: VS Code disables quick suggestions in comments by default — use `Ctrl+Alt+J` instead)
 
 ## Requirements
 
