@@ -1,1 +1,6 @@
 mcp-server/__pycache__/
+__pycache__/
+*.vsix
+vscode-extension/node_modules/
+vscode-extension/out/
+vscode-extension/package-lock.json
