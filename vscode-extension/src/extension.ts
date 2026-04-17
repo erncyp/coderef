@@ -471,18 +471,23 @@ function commentPrefix(langId: string): string {
 
 function runScan(root: string, extensionPath: string): void {
   const bundled = path.join(extensionPath, "bin", "coderef");
-  exec(`python3 "${bundled}" scan`, { cwd: root }, (err) => {
-    if (err) {
-      // Bundled script failed (e.g. python3 not on PATH) — try system coderef
-      exec("coderef scan", { cwd: root }, (err2) => {
-        if (err2) {
-          vscode.window.showWarningMessage(
-            "coderef: scan failed — ensure Python 3 is available. Run `coderef scan` manually to update .coderef."
-          );
-        }
-      });
+  // Common absolute Python paths for when VS Code's subprocess PATH is minimal
+  const pythonCandidates = ["python3", "/usr/bin/python3", "/usr/local/bin/python3"];
+
+  function tryNext(candidates: string[]): void {
+    if (candidates.length === 0) {
+      vscode.window.showWarningMessage(
+        "coderef: scan failed — Python 3 not found. Run `coderef scan` manually to update .coderef."
+      );
+      return;
     }
-  });
+    const [python, ...rest] = candidates;
+    exec(`"${python}" "${bundled}" scan`, { cwd: root, shell: "/bin/sh" }, (err: Error | null) => {
+      if (err) tryNext(rest);
+    });
+  }
+
+  tryNext(pythonCandidates);
 }
 
 // ── Activate ──────────────────────────────────────────────────────────────────
