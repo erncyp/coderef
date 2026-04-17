@@ -208,7 +208,7 @@ def load_refs(root: Path) -> dict[str, RefInfo]:
             refs[uuid] = RefInfo(location=location, kind=kind, name=name)
     return refs
 
-
+# to_ref:anchor:7f039eaa
 def _read_text(path: Path) -> str | None:
     try:
         return path.read_text(encoding="utf-8", errors="ignore")
