@@ -469,12 +469,18 @@ function commentPrefix(langId: string): string {
 // .coderef is updated immediately and the extension can resolve the new ref
 // without requiring a git commit.
 
-function runScan(root: string): void {
-  exec("coderef scan", { cwd: root }, (err) => {
+function runScan(root: string, extensionPath: string): void {
+  const bundled = path.join(extensionPath, "bin", "coderef");
+  exec(`python3 "${bundled}" scan`, { cwd: root }, (err) => {
     if (err) {
-      vscode.window.showWarningMessage(
-        "coderef: scan failed — ensure `coderef` is on your PATH. Run `coderef scan` manually to update .coderef."
-      );
+      // Bundled script failed (e.g. python3 not on PATH) — try system coderef
+      exec("coderef scan", { cwd: root }, (err2) => {
+        if (err2) {
+          vscode.window.showWarningMessage(
+            "coderef: scan failed — ensure Python 3 is available. Run `coderef scan` manually to update .coderef."
+          );
+        }
+      });
     }
   });
 }
@@ -570,7 +576,7 @@ export function activate(context: vscode.ExtensionContext): void {
       });
 
       const root = refs.workspaceRoot();
-      if (root) runScan(root);
+      if (root) runScan(root, context.extensionPath);
     })
   );
 
@@ -606,7 +612,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       const root = refs.workspaceRoot();
-      if (root) runScan(root);
+      if (root) runScan(root, context.extensionPath);
     })
   );
 
