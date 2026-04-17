@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { randomBytes } from "crypto";
+import { exec } from "child_process";
 
 // ── Regex patterns ────────────────────────────────────────────────────────────
 //
@@ -462,6 +463,22 @@ function commentPrefix(langId: string): string {
   return "//";
 }
 
+// ── Auto-scan helper ──────────────────────────────────────────────────────────
+//
+// Runs `coderef scan` in the workspace root after a ref is inserted so that
+// .coderef is updated immediately and the extension can resolve the new ref
+// without requiring a git commit.
+
+function runScan(root: string): void {
+  exec("coderef scan", { cwd: root }, (err) => {
+    if (err) {
+      vscode.window.showWarningMessage(
+        "coderef: scan failed — ensure `coderef` is on your PATH. Run `coderef scan` manually to update .coderef."
+      );
+    }
+  });
+}
+
 // ── Activate ──────────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -552,9 +569,8 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       });
 
-      await vscode.window.showInformationMessage(
-        `coderef: inserted ${name ? `ref:${uuid}:${name}` : `ref:${uuid}`}  (run git commit to update .coderef)`
-      );
+      const root = refs.workspaceRoot();
+      if (root) runScan(root);
     })
   );
 
@@ -583,10 +599,14 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       });
 
-      const msg = multiLine
-        ? `coderef: inserted range ref:${uuid}  (run git commit to update .coderef)`
-        : `coderef: inserted ref:${uuid}:start — add ref:${uuid}:end at the block's closing line`;
-      await vscode.window.showInformationMessage(msg);
+      if (!multiLine) {
+        await vscode.window.showInformationMessage(
+          `coderef: inserted ref:${uuid}:start — add ref:${uuid}:end at the block's closing line`
+        );
+      }
+
+      const root = refs.workspaceRoot();
+      if (root) runScan(root);
     })
   );
 

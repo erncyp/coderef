@@ -2,7 +2,7 @@
   "name": "coderef",
   "displayName": "Coderef",
   "description": "Navigate stable UUID-based in-source code anchors with inline hints, hover, go-to-definition, and dangling-ref diagnostics",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "coderef",
   "license": "MIT",
   "icon": "icon.png",
