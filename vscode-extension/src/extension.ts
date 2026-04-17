@@ -664,13 +664,21 @@ export function activate(context: vscode.ExtensionContext): void {
       });
       if (!picked) return;
 
-      const toRef = picked.entry.name
+      const toRefBody = picked.entry.name
         ? `to_ref:${picked.entry.name}:${picked.uuid}`
         : `to_ref:${picked.uuid}`;
 
+      const prefix = commentPrefix(editor.document.languageId);
+
       await editor.edit((eb) => {
         for (const sel of editor.selections) {
-          eb.insert(sel.active, toRef);
+          const line    = editor.document.lineAt(sel.active.line);
+          const isBlank = line.text.trim() === "";
+          const indent  = line.text.match(/^(\s*)/)?.[1] ?? "";
+          const text    = isBlank ? `${indent}${prefix} ${toRefBody}` : toRefBody;
+          // On a blank line replace the whole line to avoid trailing whitespace
+          const range   = isBlank ? line.range : new vscode.Range(sel.active, sel.active);
+          eb.replace(range, text);
         }
       });
     })
