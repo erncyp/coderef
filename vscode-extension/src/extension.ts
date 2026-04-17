@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { randomBytes } from "crypto";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 
 // ── Regex patterns ────────────────────────────────────────────────────────────
 //
@@ -471,8 +471,8 @@ function commentPrefix(langId: string): string {
 
 function runScan(root: string, extensionPath: string): void {
   const bundled = path.join(extensionPath, "bin", "coderef");
-  // Common absolute Python paths for when VS Code's subprocess PATH is minimal
-  const pythonCandidates = ["python3", "/usr/bin/python3", "/usr/local/bin/python3"];
+  // Try absolute paths first so we don't rely on VS Code's minimal subprocess PATH
+  const pythonCandidates = ["/usr/bin/python3", "/usr/local/bin/python3", "python3"];
 
   function tryNext(candidates: string[]): void {
     if (candidates.length === 0) {
@@ -482,8 +482,12 @@ function runScan(root: string, extensionPath: string): void {
       return;
     }
     const [python, ...rest] = candidates;
-    exec(`"${python}" "${bundled}" scan`, { cwd: root, shell: "/bin/sh" }, (err: Error | null) => {
-      if (err) tryNext(rest);
+    execFile(python, [bundled, "scan"], { cwd: root }, (err) => {
+      // ENOENT means the python binary wasn't found — try the next candidate.
+      // Any other error (non-zero exit) means the script ran; ignore it.
+      if (err && (err as NodeJS.ErrnoException).code === "ENOENT") {
+        tryNext(rest);
+      }
     });
   }
 
