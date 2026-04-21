@@ -171,6 +171,125 @@ function! coderef#insert_range() abort
   endif
 endfunction
 
+" ── Public: info / hover ──────────────────────────────────────────────────────
+
+" Show a floating info card for the to_ref: under the cursor.
+" This is the hover-card equivalent of the VSCode extension.
+" Neovim 0.5+ → floating window.  Vim 8.1.1517+ → popup.  Older → echo.
+function! coderef#info() abort
+  let l:uuid = coderef#uuid_under_cursor()
+  if l:uuid ==# ''
+    echo 'coderef: no to_ref: under cursor'
+    return
+  endif
+
+  let l:refs   = coderef#load()
+  let l:ref    = get(l:refs, l:uuid, {})
+  let l:commit = matchstr(getline('.'), '\<to_ref:@\zs[^: \t]\+\ze:')
+
+  if empty(l:ref)
+    let l:lines = l:commit !=# ''
+      \ ? ['coderef ' . l:uuid, '-> [' . l:commit . '] (historical)']
+      \ : ['coderef ' . l:uuid, '!! dangling — not in .coderef']
+    call s:show_float(l:lines)
+    return
+  endif
+
+  let l:loc = l:ref['file'] . ':' . l:ref['line']
+  if l:ref['endline'] != l:ref['line']
+    let l:loc .= '-' . l:ref['endline'] . ' (range)'
+  endif
+  let l:title = 'coderef ' . l:uuid
+  if l:ref['name'] !=# '' | let l:title .= ' — ' . l:ref['name'] | endif
+  call s:show_float([l:title, '-> ' . l:loc])
+endfunction
+
+" Internal: show lines in the best available popup for the current runtime.
+let g:_coderef_float_win = -1
+
+function! s:show_float(lines) abort
+  if has('nvim-0.5')
+    call coderef#_close_float()
+    let l:buf = nvim_create_buf(0, 1)
+    call nvim_buf_set_lines(l:buf, 0, -1, 0, a:lines)
+    call nvim_buf_set_option(l:buf, 'modifiable', 0)
+    let l:width = max(map(copy(a:lines), 'strwidth(v:val)')) + 2
+    let g:_coderef_float_win = nvim_open_win(l:buf, 0, {
+      \ 'relative': 'cursor',
+      \ 'row': 1,
+      \ 'col': 0,
+      \ 'width': l:width,
+      \ 'height': len(a:lines),
+      \ 'style': 'minimal',
+      \ 'border': 'rounded',
+    \ })
+    augroup coderef_float_close
+      autocmd!
+      autocmd CursorMoved,CursorMovedI,InsertEnter,BufLeave * ++once
+        \ call coderef#_close_float()
+    augroup END
+  elseif exists('*popup_create')
+    call popup_create(a:lines, {'padding': [0, 1, 0, 1], 'border': [1, 1, 1, 1], 'time': 3000})
+  else
+    echo join(a:lines, '  |  ')
+  endif
+endfunction
+
+function! coderef#_close_float() abort
+  if g:_coderef_float_win >= 0
+    if nvim_win_is_valid(g:_coderef_float_win)
+      call nvim_win_close(g:_coderef_float_win, 1)
+    endif
+    let g:_coderef_float_win = -1
+  endif
+endfunction
+
+" ── Public: completion ────────────────────────────────────────────────────────
+
+" Omnifunc/completefunc for to_ref: UUID completion.
+"
+" Auto-enabled as omnifunc when g:coderef_set_omnifunc = 1 (default) and
+" no other omnifunc is set for the buffer.  Trigger in insert mode with:
+"   <C-x><C-o>   if set as omnifunc
+"   <C-x><C-u>   if set as completefunc
+"
+" To opt out: let g:coderef_set_omnifunc = 0
+function! coderef#complete(findstart, base) abort
+  if a:findstart
+    " Walk back over hex chars to find where the UUID being typed starts
+    let l:line  = getline('.')
+    let l:start = col('.') - 1
+    while l:start > 0 && l:line[l:start - 1] =~# '[a-f0-9]'
+      let l:start -= 1
+    endwhile
+    " Only complete if preceded by 'to_ref:' (with optional @commit/name prefix)
+    let l:before = l:start > 0 ? l:line[:l:start - 1] : ''
+    if l:before =~# '\<to_ref:[^[:space:]]*$'
+      return l:start
+    endif
+    return -3   " not in a to_ref: context — cancel silently
+  else
+    let l:refs  = coderef#load()
+    let l:items = []
+    for [l:uuid, l:ref] in items(l:refs)
+      if a:base ==# '' || l:uuid[:len(a:base) - 1] ==# a:base
+        let l:loc = l:ref['file'] . ':' . l:ref['line']
+        if l:ref['endline'] != l:ref['line']
+          let l:loc .= '-' . l:ref['endline']
+        endif
+        let l:menu = l:ref['name'] !=# ''
+          \ ? l:loc . ' (' . l:ref['name'] . ')'
+          \ : l:loc
+        call add(l:items, {'word': l:uuid, 'menu': l:menu, 'kind': 'r'})
+      endif
+    endfor
+    " Named refs sort first (menu contains parentheses when named)
+    call sort(l:items, {a, b ->
+      \ (a.menu =~# '(' ? 0 : 1) - (b.menu =~# '(' ? 0 : 1)})
+    return l:items
+  endif
+endfunction
+
 " ── Public: checking ──────────────────────────────────────────────────────────
 
 " Run `coderef check`.  On success prints a summary; on failure populates
@@ -219,7 +338,7 @@ endfunction
 " Delegates to the Lua module so VimScript stays unaware of nvim_buf_set_extmark.
 function! coderef#update_hints(bufnr) abort
   if !has('nvim-0.5') || !g:coderef_show_hints | return | endif
-  lua require('coderef').update(vim.fn.str2nr(vim.fn.expand('<abuf>')))
+  call v:lua.require('coderef').update(a:bufnr)
 endfunction
 
 " ── Private helpers ───────────────────────────────────────────────────────────

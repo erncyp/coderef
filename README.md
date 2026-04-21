@@ -338,15 +338,29 @@ set runtimepath+=/path/to/coderef/vim-plugin
 | `<leader>cp` | `:CoDerefPreview` | Open in preview window |
 | `<leader>ci` | `:CoDerefInsert` | Insert a new `ref:` at end of line |
 | `<leader>cr` | `:CoDerefInsertRange` | Wrap visual selection with `:start`/`:end` |
+| `<leader>ck` | `:CoDerefInfo` | Show info card for the ref under the cursor |
 | — | `:CoDerefCheck` | Run `coderef check`, load results into quickfix |
 
 Override any mapping in your vimrc, or set `let g:coderef_no_default_maps = 1` to disable them all.
+
+### Completion
+
+Typing `to_ref:` and pressing `<C-x><C-o>` opens a completion menu with all known UUIDs, their locations, and names — equivalent to the VSCode autocomplete. The plugin sets `omnifunc=coderef#complete` for every buffer where no other omnifunc is configured. To opt out (e.g. when using an LSP client): `let g:coderef_set_omnifunc = 0`.
+
+### Info card
+
+`:CoDerefInfo` (default `<leader>ck`) shows a hover-style card for the `to_ref:` under the cursor:
+- Resolved refs show UUID, name, and `file:line` (or `file:start-end` for ranges)
+- Commit-pinned refs show `→ [commit] (historical)`
+- Dangling refs show a warning
+
+Neovim 0.5+ uses a floating window; Vim 8.1.1517+ uses a popup; older Vim echoes to the command line.
 
 ### Neovim extras (0.5+)
 
 - **Virtual text** — `→ src/auth.py:14` hints after every `to_ref:`; `→ [abc1234] (historical)` for commit-pinned refs
 - **Diagnostics** — dangling refs in the sign column, navigable with `]d` / `[d`
-- **Lua setup** — `require('coderef').setup({ show_hints = false })`
+- **Lua setup** — `require('coderef').setup({ show_hints = false, info_key = 'K' })`
 
 Run `:help coderef` for full documentation.
 

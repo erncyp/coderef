@@ -164,8 +164,14 @@ function M.setup(opts)
   if opts.insert_key ~= nil then
     vim.g.coderef_insert_key = opts.insert_key
   end
+  if opts.info_key ~= nil then
+    vim.g.coderef_info_key = opts.info_key
+  end
   if opts.no_default_maps ~= nil then
     vim.g.coderef_no_default_maps = opts.no_default_maps and 1 or 0
+  end
+  if opts.set_omnifunc ~= nil then
+    vim.g.coderef_set_omnifunc = opts.set_omnifunc and 1 or 0
   end
 end
 

@@ -24,10 +24,13 @@ let g:coderef_goto_key         = get(g:, 'coderef_goto_key',         '<leader>cg
 let g:coderef_preview_key      = get(g:, 'coderef_preview_key',      '<leader>cp')
 let g:coderef_insert_key       = get(g:, 'coderef_insert_key',       '<leader>ci')
 let g:coderef_insert_range_key = get(g:, 'coderef_insert_range_key', '<leader>cr')
+let g:coderef_info_key         = get(g:, 'coderef_info_key',         '<leader>ck')
 " Set 1 to skip all default mappings
 let g:coderef_no_default_maps  = get(g:, 'coderef_no_default_maps',  0)
 " Set 0 to disable virtual-text hints (Neovim only)
 let g:coderef_show_hints       = get(g:, 'coderef_show_hints',       1)
+" Set 0 to opt out of auto-setting omnifunc=coderef#complete for every buffer
+let g:coderef_set_omnifunc     = get(g:, 'coderef_set_omnifunc',     1)
 
 " ── Commands ──────────────────────────────────────────────────────────────────
 
@@ -46,6 +49,9 @@ command! -range CoDerefInsertRange call coderef#insert_range()
 " Run `coderef check` and load any dangling refs into the quickfix list
 command! CoDerefCheck       call coderef#check()
 
+" Show an info card for the to_ref: under the cursor (hover equivalent)
+command! CoDerefInfo        call coderef#info()
+
 " ── Default mappings ──────────────────────────────────────────────────────────
 
 if !g:coderef_no_default_maps
@@ -61,6 +67,9 @@ if !g:coderef_no_default_maps
   if g:coderef_insert_range_key !=# ''
     execute 'vnoremap <silent> ' . g:coderef_insert_range_key . ' :CoDerefInsertRange<CR>'
   endif
+  if g:coderef_info_key !=# ''
+    execute 'nnoremap <silent> ' . g:coderef_info_key . ' :CoDerefInfo<CR>'
+  endif
 endif
 
 " ── Autocmds ──────────────────────────────────────────────────────────────────
@@ -75,4 +84,9 @@ augroup coderef
 
   " Invalidate the .coderef cache whenever the file is written
   autocmd BufWritePost .coderef call coderef#_invalidate_cache()
+
+  " Set omnifunc for completion (only when nothing else has claimed it)
+  if g:coderef_set_omnifunc
+    autocmd BufEnter * if &omnifunc ==# '' | setlocal omnifunc=coderef#complete | endif
+  endif
 augroup END

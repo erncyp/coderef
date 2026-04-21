@@ -10,8 +10,9 @@ CONTENTS                                                     *coderef-contents*
     2. Installation ............ |coderef-install|
     3. Commands ................ |coderef-commands|
     4. Mappings ................ |coderef-mappings|
-    5. Configuration ........... |coderef-config|
-    6. Neovim extras ........... |coderef-neovim|
+    5. Completion .............. |coderef-completion|
+    6. Configuration ........... |coderef-config|
+    7. Neovim extras ........... |coderef-neovim|
 
 ==============================================================================
 1. INTRODUCTION                                                 *coderef-intro*
@@ -85,6 +86,19 @@ Requirements:~
     summary.  On failure, loads dangling refs into the |quickfix| list
     and opens it with |:copen|.
 
+*:CoDerefInfo*
+    Show an info card for the `to_ref:` under the cursor.  This is the
+    hover-card equivalent of the VSCode extension.
+
+    - Resolved ref: shows UUID, name (if any), and `file:line[-end]`
+    - Commit-pinned ref: shows `-> [commit] (historical)`
+    - Dangling ref: shows a warning
+
+    Display method depends on the runtime:
+      Neovim 0.5+  →  floating window (closes on cursor move)
+      Vim 8.1.1517+ →  popup notification
+      Older Vim    →  echo in the command line
+
 ==============================================================================
 4. MAPPINGS                                                  *coderef-mappings*
 
@@ -94,6 +108,7 @@ Default mappings (normal mode unless noted):
     <leader>cp      |:CoDerefPreview|
     <leader>ci      |:CoDerefInsert|
     <leader>cr      |:CoDerefInsertRange|  (visual mode)
+    <leader>ck      |:CoDerefInfo|
 
 Disable all defaults:~
 >
@@ -103,11 +118,38 @@ Override individual keys:~
 >
     let g:coderef_goto_key   = 'gd'
     let g:coderef_insert_key = '<leader>ra'
+    let g:coderef_info_key   = 'K'
 <
 Set a key to '' to disable it without disabling the others.
 
 ==============================================================================
-5. CONFIGURATION                                               *coderef-config*
+5. COMPLETION                                               *coderef-completion*
+
+The plugin registers `coderef#complete` as an omnifunc for every buffer where
+no other omnifunc is set.  Trigger it in insert mode with <C-x><C-o>.
+
+When you type `to_ref:` and then press <C-x><C-o>, a completion menu shows
+all known UUIDs from `.coderef` with their file locations and names:
+
+    a3f9c821    src/auth/middleware.py:14 (auth-guard)    r
+    b7d2e104    src/api/server.py:42-49                   r
+
+Named refs sort to the top.  The completion works for all four `to_ref:`
+forms — after `to_ref:`, `to_ref:@commit:`, `to_ref:name:`, or
+`to_ref:@commit:name:`.
+
+To use it as `completefunc` instead (<C-x><C-u>):~
+>
+    let g:coderef_set_omnifunc = 0
+    setlocal completefunc=coderef#complete
+<
+To disable auto-setting entirely (e.g. when using an LSP client):~
+>
+    let g:coderef_set_omnifunc = 0
+<
+
+==============================================================================
+6. CONFIGURATION                                               *coderef-config*
 
 Set these variables in your vimrc before the plugin loads.
 
@@ -123,14 +165,23 @@ Set these variables in your vimrc before the plugin loads.
 *g:coderef_insert_range_key*    (default: '<leader>cr')
     Visual-mode key for |:CoDerefInsertRange|.
 
+*g:coderef_info_key*            (default: '<leader>ck')
+    Normal-mode key for |:CoDerefInfo|.  Set to 'K' to shadow the
+    built-in keyword lookup with coderef info.
+
 *g:coderef_no_default_maps*     (default: 0)
     Set to 1 to suppress all default key mappings.
 
 *g:coderef_show_hints*          (default: 1)
     Set to 0 to disable virtual-text hints (Neovim only).
 
+*g:coderef_set_omnifunc*        (default: 1)
+    Set to 1 (default) to auto-set `omnifunc=coderef#complete` in every
+    buffer where no other omnifunc is configured.  Set to 0 to opt out
+    (e.g. when an LSP client manages omnifunc).
+
 ==============================================================================
-6. NEOVIM EXTRAS                                               *coderef-neovim*
+7. NEOVIM EXTRAS                                               *coderef-neovim*
 
 On Neovim 0.5+, the Lua module `lua/coderef.lua` is loaded automatically and
 provides:
@@ -168,6 +219,7 @@ Lua-style setup (optional)~
           show_hints      = true,
           no_default_maps = false,
           goto_key        = '<leader>cg',
+          info_key        = '<leader>ck',
         })
 <
 ==============================================================================
