@@ -9,10 +9,21 @@ description     = "Stable UUID-based in-source code references"
 requires-python = ">=3.9"
 license         = { text = "MIT" }
 readme          = "README.md"
+keywords        = ["coderef", "uuid", "anchor", "navigation", "cross-reference"]
 
-# coderef_entry.py is the thin wrapper that loads cli/coderef by path.
+[project.urls]
+Homepage   = "https://github.com/erncyp/coderef"
+Repository = "https://github.com/erncyp/coderef"
+Issues     = "https://github.com/erncyp/coderef/issues"
+
 [project.scripts]
-coderef = "coderef_entry:main"
+coderef = "coderef_core:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
 
 [tool.setuptools]
-py-modules = ["coderef_entry"]
+py-modules = ["coderef_core", "coderef_entry"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
