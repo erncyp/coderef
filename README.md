@@ -61,30 +61,24 @@ UUIDs are 8-character lowercase hex strings and are language-agnostic — any fi
 
 ## Installation
 
-### 1. Clone this repo
+### 1. Install the package
 
 ```bash
-git clone https://github.com/erncyp/coderef.git
+pip install coderef
 ```
+
+**Requirements:** Python 3.9+.
 
 ### 2. Install the git hook into your project
 
 From inside your project's directory:
 
 ```bash
-/path/to/coderef/install.sh
-```
-
-Or use the CLI:
-
-```bash
 cd /your/project
-/path/to/coderef/cli/coderef install
+coderef install
 ```
 
 This copies the pre-commit, post-checkout, and post-merge hooks into `.git/hooks/` and creates an empty `.coderef` if one doesn't exist. Any existing hooks are chained rather than replaced.
-
-**Requirements:** Python 3.9+ on `PATH`.
 
 ### 3. Commit `.coderef` to your repository
 
@@ -185,8 +179,6 @@ The `@` sigil unambiguously marks a commit ref. Commit-pinned references appear 
 coderef <command>
 ```
 
-Add `cli/` to your `PATH`, or invoke as `/path/to/coderef/cli/coderef`.
-
 | Command | Description |
 |---|---|
 | `coderef resolve <uuid>` | Print the current `file:line` for a UUID |
@@ -258,10 +250,10 @@ repos:
 
 `coderef-check` fails if any `to_ref:` is dangling or any range pair is mismatched. `coderef-scan` rebuilds `.coderef` first — skip it if you have the git hook installed.
 
-The repo is also directly installable:
+The CLI is also available via pip if you don't want to use pre-commit:
 
 ```bash
-pip install git+https://github.com/erncyp/coderef.git
+pip install coderef
 ```
 
 ---
